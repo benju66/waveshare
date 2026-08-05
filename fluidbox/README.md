@@ -5,7 +5,7 @@ Tilt the board and the liquid pours; shake it and it sprays and flashes orange.
 The screen is the front wall of a glass box, and the depth you see receding into
 the display is the real thickness of the enclosure.
 
-Measured on hardware: **900 particles, 69 fps display, 42 simulation steps/s.**
+Measured on hardware: **900 particles, 90 fps display, 38 simulation steps/s.**
 
 ---
 
@@ -90,8 +90,7 @@ in `render_frame()` is:
 ```
 for each band:
     wait until this band's buffer is free
-    clear it
-    draw the box wireframe pixels that fall in this band
+    clear it to black
     draw every particle that overlaps this band
     hand the buffer to DMA and move on immediately
 ```
@@ -106,10 +105,12 @@ that is always the one about to be reused.
 The panel link sets the ceiling. QSPI moves 4 bits per clock, so at the driver's
 default 40 MHz a 322 KB frame takes ~16 ms — about 52 fps in practice. The
 ESP32-S3's SPI peripheral will run at 80 MHz, which halves that and measures
-**91 fps** with nothing else drawn (77 fps once the back wall and the specular
-highlights are painted). `LCD_PIXEL_CLOCK_HZ` in `display.c` is the knob; drop it
-back to 40 MHz if you ever see tearing, since these signals route through the
-GPIO matrix rather than dedicated IOMUX pins.
+**91 fps** with nothing but a cleared buffer. Since the only thing drawn over
+that is the fluid, the shipped build sits at **90 fps** at rest, dropping to the
+high seventies mid-shake when the particles spread out and cost more to
+rasterise. `LCD_PIXEL_CLOCK_HZ` in `display.c` is the knob; drop it back to
+40 MHz if you ever see tearing, since these signals route through the GPIO
+matrix rather than dedicated IOMUX pins.
 
 ### Colour without arithmetic
 
@@ -134,8 +135,9 @@ table beats doing it per pixel.
 
 ### Selling the third dimension
 
-A flat screen full of circles reads as 2D unless several cues agree. FluidBox
-stacks five, all of them cheap:
+Nothing is drawn but the particles — no frame, no wall, no wireframe. The
+enclosure is real in the physics and invisible on the screen, so the depth has
+to come entirely from how the fluid itself is drawn. Three cues, all cheap:
 
 1. **Short focal length.** `PROJ_FOCAL` is 220 against a box 75 deep, so the far
    wall projects to about 75% of the near one. Particles at the back are visibly
@@ -143,15 +145,110 @@ stacks five, all of them cheap:
    length further, or deepening the box, quickly starts to look like a tunnel
    rather than a slim device.
 2. **Depth darkening.** `DEPTH_DIM_MIN` takes the far plane down to 20% brightness.
-3. **A painted back wall.** The interior of the far face is filled with a very
-   dark blue, so the fluid is seen against a surface rather than floating in a
-   void.
-4. **A depth-shaded wireframe.** The near face, the struts and the far face are
-   drawn at three decreasing brightnesses, which makes the frame itself read as
-   receding.
-5. **Specular highlights.** Each particle gets a second, smaller disc offset up
+3. **Specular highlights.** Each particle gets a second, smaller disc offset up
    and to the left in a lightened shade. Every particle is lit from the same
    direction, so the body of fluid looks rounded rather than like confetti.
+
+The box still reads clearly, because the fluid traces it: the pool flattens
+against the bottom, climbs the rounded corners, and rides up over the fillet
+into the back panel. Drawing the enclosure as well turned out to add nothing but
+clutter, which is why several increasingly elaborate attempts at it — a
+wireframe, then depth-shaded rings, then a lit back wall — were all backed out
+again.
+
+### The box is the shape of the case
+
+The device is not a cuboid, so neither is the box. Three radii describe it, all
+declared in millimetres in `config.h` and converted through `PX_PER_MM`, because
+they are physical properties of the case rather than of the framebuffer:
+
+| Constant | Value | What it rounds |
+|---|---|---|
+| `BOX_CORNER_MM` | 4.5 mm | The panel outline, in x and y |
+| `BOX_BACK_FILLET_MM` | 2.0 mm | Where the walls curve into the back panel |
+| `BOX_FRONT_FILLET` | 25% of the back fillet | Where the walls curve into the glass |
+
+Getting this wrong is visible. With square corners the frame overshoots the
+glass and fluid pools into four corners you physically cannot see; with a hard
+back edge the box reads as a cookie cutter rather than an enclosure.
+
+### Resolving a curved box without branches
+
+The whole surface — flat walls, vertical corners, both fillets, and the
+doubly-curved patches where a corner runs into the back panel — is one
+continuous shape, and `resolve_walls()` handles all of it with the same trick
+applied twice and no special cases.
+
+**First, collapse x and y.** Clamp the point to the inner rectangle joining the
+four corner-arc centres. Whatever offset remains points straight out from the
+nearest part of the outline, and its length is how far out the particle is:
+
+```
+a = clamp(p.xy, arc_lo, arc_hi)
+u = p.xy - a
+r = |u|                    // one radial coordinate replaces two axes
+```
+
+**Then solve in (r, z).** That plane is again a rectangle with rounded corners:
+`r` bounded by the side radius, `z` between the glass and the back panel, with a
+fillet at each end. So clamp and project a second time, using whichever fillet
+is nearer:
+
+```
+fillet, cz = front or back fillet, or zero in the straight section between them
+cr = min(r, side_r - fillet)
+d  = (r - cr, z - cz)
+if |d| > fillet:
+    (r, z) = (cr, cz) + fillet * d / |d|
+```
+
+Every case falls out of the arithmetic. Against a flat wall one component of `d`
+is zero. In a vertical corner the first stage produces the arc, in a fillet the
+second stage does, and where a corner meets the back panel both do at once,
+which is exactly the doubly-curved patch. Mapping `r` back through `u` gives the
+new position, and the surface normal is `(u * nr, nz)`, so restitution and drag
+act on a correctly oriented normal everywhere.
+
+Insetting a rounded rectangle by the wall margin shrinks its radius by the same
+amount and leaves the arc centres alone, so the side radius is simply
+`BOX_CORNER_R - WALL_MARGIN`.
+
+### Not drawing it
+
+The box is never drawn. `render_frame()` clears each band to black and paints
+particles, and that is the whole of it.
+
+This was arrived at by deleting things. Earlier versions drew a twelve-edge
+wireframe, then three concentric rounded rectangles at decreasing brightness,
+then diagonal struts between their corners, then a lit back panel with a
+brighter band for the curved lip. Every one of them was less legible than the
+fluid on its own. What went with them: the line and arc rasterisers, the packed
+edge-point list and its counting sort, the per-row span tables, and a per-band
+draw loop — roughly 25 KB of DRAM and a good chunk of the frame budget.
+
+The geometry still matters, it just is not visible directly. It decides where
+the fluid can go, and the fluid is what you see.
+
+Two things improved for free when the corners came in. Frame rate went from 69
+to about 84 fps, because the rounded back covers fewer pixels. And measured
+`rho` moved from 1.09 onto the 1.17 rest density: trimming the corners shrank
+the volume enough that the same 900 particles genuinely reach rest density
+instead of sitting under permanent tension.
+
+### Previewing without flashing
+
+`tools/preview` compiles the real `render.c` on the host against stub
+`display.h` and `esp_log.h`, renders one frame, and writes a PNG:
+
+```
+tools/preview/build.sh        # empty box
+tools/preview/build.sh 780    # with a placeholder block of fluid
+```
+
+Geometry changes are far quicker to judge this way than by flashing, and because
+it is the actual renderer, what it produces is pixel for pixel what the panel
+shows. The fluid it draws is a plain lattice standing in for the solver, so
+ignore its shape — only the box around it is meaningful.
 
 ### Discs and depth
 
@@ -170,17 +267,10 @@ darkened.
 Filled circles come from a small table of half-widths per radius, so drawing one
 is a handful of `memset`-like row fills with no per-pixel maths.
 
-The wireframe points pack as `(shade << 30) | (y << 16) | x`. Coordinates need
-only 9 bits each, so the spare top bits carry which of the three brightnesses
-the pixel uses, and no parallel array is needed.
-
 Correct occlusion needs far particles drawn before near ones. That falls out for
 free: the simulation's grid cells are numbered with depth as the most
 significant axis, so sorting particles into cells also sorts them by depth, and
 the renderer just walks the array backwards.
-
-The box wireframe never moves, so its twelve edges are rasterised once at
-startup into a list of points bucketed by band.
 
 ---
 
@@ -260,15 +350,16 @@ giving up Gauss-Seidel.
 
 `calibrate_rest_density()` sums the kernel over an *unbounded* lattice, but the
 box is only 75 px deep against a 28 px smoothing radius — roughly four particle
-layers. Particles genuinely cannot reach the free-space density near the front
-or back glass, so measured `rho` settles around 1.09 against a nominal rest of
-1.17.
+layers. Particles near the front or back glass are missing neighbours that the
+calibration assumes are there, so the nominal rest density of 1.17 is not
+something the confined geometry can reach everywhere.
 
-The fluid is therefore under slight tension everywhere, which reads as a
-cohesive, blob-like liquid. That happens to suit the demo, but it is a side
-effect of the geometry rather than a deliberate choice. If it ever needs to be
-exact, the honest fix is to calibrate the rest density against the confined
-geometry instead of an infinite one.
+This used to show up as `rho` settling around 1.09, leaving the fluid under
+slight tension. Rounding the corners removed enough volume that 900 particles
+now pack to roughly 1.17 anyway, so the two errors happen to cancel. That is
+luck, not design: change the particle count or the box depth and the tension
+comes back. The honest fix, if it ever needs to be exact, is to calibrate rest
+density against the confined geometry instead of an infinite one.
 
 `rest_density` is not a magic number. At startup `calibrate_rest_density()` sums
 the kernel over a perfect lattice at `REST_SPACING`, so you can change the
@@ -410,20 +501,20 @@ BOOT is untouched, so it keeps its recovery role.
 ## 5. Reading the log
 
 ```
-52.5 fps | 41.4 steps/s | grid 490 dens 10059 relax 9662 us |
-rho 1.17/1.17 | speed avg 66 max 181 | accel 1.09 -0.04 -9.94 | sram 119715
+90.2 fps | 37.9 steps/s | grid 524 dens 10832 relax 10475 us |
+rho 1.17/1.17 | speed avg 66 max 181 | accel 1.10 0.12 -9.87 | sram 149459
 ```
 
 | Field | Healthy | Meaning |
 |---|---|---|
-| `fps` | ~69 | Display refresh; capped by QSPI bandwidth |
+| `fps` | ~90 at rest | Display refresh; capped by QSPI bandwidth |
 | `steps/s` | 40-45 | Simulation rate; the number to watch when tuning |
 | `grid/dens/relax` | microseconds per pass | Where the simulation time goes. `dens` includes viscosity, since they share a pass |
-| `rho` | ~1.09 vs rest 1.17 | Drifting well *above* rest means `K_PRESSURE` is too low |
+| `rho` | ~1.17, matching rest | Drifting well *above* rest means `K_PRESSURE` is too low |
 | `speed avg` | ~67 at rest, steady | Fluctuating when idle means jitter; lower `TIME_SCALE` |
 | `speed max` | ~160 at rest | Occasional spikes are the corner pops noted above |
 | `accel` | ~9.8 total | Raw IMU, for checking the axis mapping |
-| `sram` | ~120 KB | Internal heap |
+| `sram` | ~149 KB | Internal heap |
 
 ---
 
@@ -443,7 +534,8 @@ Everything adjustable is in [`main/config.h`](main/config.h).
 | Deeper-looking box | `BOX_D` up, then recheck `GRID_CZ`; or `PROJ_FOCAL` down for stronger perspective at the same depth |
 | Flatter, less contrasty depth | `DEPTH_DIM_MIN` up towards 1 |
 | Matte particles instead of glossy | `HIGHLIGHT_ENABLE` to 0, or `HIGHLIGHT_LIFT` down |
-| Higher frame rate | `HIGHLIGHT_ENABLE` to 0 and skip the back wall; worth ~15 fps |
+| Higher frame rate | `PARTICLE_COUNT` down, or `HIGHLIGHT_ENABLE` to 0 |
+| Rounder or squarer corners | `BOX_CORNER_MM`; `BOX_BACK_FILLET_MM` for the curve into the back panel |
 | Dimmer screen | `DISPLAY_BRIGHTNESS`, 0-255 |
 | Disable swirl | `ROTATION_GAIN` to 0 |
 
@@ -464,7 +556,7 @@ free.
 | `main/main.c` | Startup, and the two tasks |
 | `main/config.h` | Every tunable constant |
 | `main/display.c` | Panel bring-up, band buffers, DMA |
-| `main/render.c` | Projection, colour tables, rasteriser |
+| `main/render.c` | Projection, colour tables, particle rasteriser |
 | `main/sim.c` | The fluid solver |
 | `main/imu.c` | QMI8658, gravity/shake separation |
 | `main/button.c` | PWR via the IO expander |
@@ -480,3 +572,6 @@ of seconds, which is handy for scripting measurements:
 ```bash
 python3 ../tools/capture.py 10
 ```
+
+`../tools/preview` renders a frame on the host instead of the board, for judging
+geometry without a flash cycle. See [Previewing without flashing](#previewing-without-flashing).

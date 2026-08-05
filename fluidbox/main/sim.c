@@ -452,47 +452,110 @@ static void relax_positions(float dt)
     }
 }
 
+// The interior of the case: a rounded rectangle in x and y, extruded through
+// the depth of the box, and curved into the glass at the front and the back
+// panel at the back. Every wall, edge and corner is one continuous surface.
+//
+// It resolves as the same trick applied twice. Clamp a point to the inner
+// rectangle joining the four corner-arc centres, and whatever offset remains
+// points straight out from the nearest part of the outline; its length is how
+// far out the particle is, which collapses x and y into a single radial
+// coordinate. That leaves a 2D problem in (radial, depth), which is again a
+// rectangle with rounded corners, so the same clamp-and-project applies.
+//
+// Every case falls out of it with no branching. Against a flat wall one
+// component of the offset is zero; in a vertical corner the first stage gives
+// the arc; in the fillet the second stage does; where a corner meets the back
+// panel both do at once, which is the doubly-curved patch.
 static void resolve_walls(void)
 {
-    static const float lo[3] = {WALL_MARGIN, WALL_MARGIN, WALL_MARGIN};
-    const float hi[3] = {BOX_W - WALL_MARGIN, BOX_H - WALL_MARGIN, BOX_D - WALL_MARGIN};
+    const float lo_z = WALL_MARGIN;
+    const float hi_z = BOX_D - WALL_MARGIN;
+
+    // Centres of the four corner arcs.
+    const float arc_lo_x = BOX_CORNER_R;
+    const float arc_hi_x = BOX_W - BOX_CORNER_R;
+    const float arc_lo_y = BOX_CORNER_R;
+    const float arc_hi_y = BOX_H - BOX_CORNER_R;
+
+    // Insetting a rounded rectangle by the wall margin shrinks its radius by
+    // the same amount, leaving the arc centres where they are.
+    const float side_r = BOX_CORNER_R - WALL_MARGIN;
+
+    const float front_f = BOX_FRONT_FILLET;
+    const float back_f = BOX_BACK_FILLET;
 
     for (int i = 0; i < s_count; i++) {
-        bool hit[3] = {false, false, false};
-        bool touching = false;
+        const float x = s_p->pos[i][0];
+        const float y = s_p->pos[i][1];
+        const float z = s_p->pos[i][2];
 
-        for (int a = 0; a < 3; a++) {
-            const float p = s_p->pos[i][a];
-            if (p >= lo[a] && p <= hi[a]) {
-                continue;
-            }
-
-            if (p < lo[a]) {
-                s_p->pos[i][a] = lo[a];
-                if (s_p->vel[i][a] < 0.0f) {
-                    s_p->vel[i][a] = -s_p->vel[i][a] * WALL_RESTITUTION;
-                }
-            } else {
-                s_p->pos[i][a] = hi[a];
-                if (s_p->vel[i][a] > 0.0f) {
-                    s_p->vel[i][a] = -s_p->vel[i][a] * WALL_RESTITUTION;
-                }
-            }
-
-            hit[a] = true;
-            touching = true;
+        const float ax = x < arc_lo_x ? arc_lo_x : (x > arc_hi_x ? arc_hi_x : x);
+        const float ay = y < arc_lo_y ? arc_lo_y : (y > arc_hi_y ? arc_hi_y : y);
+        float ux = x - ax;
+        float uy = y - ay;
+        float r = sqrtf(ux * ux + uy * uy);
+        if (r > 1e-6f) {
+            ux /= r;
+            uy /= r;
+        } else {
+            ux = 0.0f;
+            uy = 0.0f;
         }
 
-        // Drag applies once, and only along the surface. Damping per
-        // out-of-bounds axis would compound on an edge or in a corner, and
-        // would also fight the restitution already applied to the normal.
-        if (touching) {
-            for (int a = 0; a < 3; a++) {
-                if (!hit[a]) {
-                    s_p->vel[i][a] *= WALL_FRICTION;
-                }
-            }
+        // Whichever end of the box we are near supplies the fillet. Between
+        // them the wall is straight, which is the same maths at zero radius.
+        float fillet, cz;
+        if (z < lo_z + front_f) {
+            fillet = front_f;
+            cz = lo_z + front_f;
+        } else if (z > hi_z - back_f) {
+            fillet = back_f;
+            cz = hi_z - back_f;
+        } else {
+            fillet = 0.0f;
+            cz = z;
         }
+
+        const float lim = side_r - fillet;
+        const float cr = r < lim ? r : lim;
+        const float dr = r - cr;
+        const float dz = z - cz;
+        const float dd2 = dr * dr + dz * dz;
+
+        if (dd2 <= fillet * fillet) {
+            continue;
+        }
+
+        const float dd = sqrtf(dd2);
+        const float nr = dr / dd;
+        const float nz = dz / dd;
+
+        s_p->pos[i][0] = ax + ux * (cr + nr * fillet);
+        s_p->pos[i][1] = ay + uy * (cr + nr * fillet);
+        s_p->pos[i][2] = cz + nz * fillet;
+
+        // The surface normal in three dimensions: the in-plane direction scaled
+        // by how much of the offset was radial, plus the depth part.
+        const float nx = ux * nr;
+        const float ny = uy * nr;
+
+        const float vn = s_p->vel[i][0] * nx + s_p->vel[i][1] * ny + s_p->vel[i][2] * nz;
+        if (vn > 0.0f) {
+            const float k = (1.0f + WALL_RESTITUTION) * vn;
+            s_p->vel[i][0] -= k * nx;
+            s_p->vel[i][1] -= k * ny;
+            s_p->vel[i][2] -= k * nz;
+        }
+
+        // Damp the whole velocity, then put the normal component back, so drag
+        // acts only along the surface and never fights the restitution above.
+        const float keep =
+            s_p->vel[i][0] * nx + s_p->vel[i][1] * ny + s_p->vel[i][2] * nz;
+        const float restore = keep * (1.0f - WALL_FRICTION);
+        s_p->vel[i][0] = s_p->vel[i][0] * WALL_FRICTION + restore * nx;
+        s_p->vel[i][1] = s_p->vel[i][1] * WALL_FRICTION + restore * ny;
+        s_p->vel[i][2] = s_p->vel[i][2] * WALL_FRICTION + restore * nz;
     }
 }
 

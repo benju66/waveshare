@@ -12,3 +12,7 @@ fluidbox/managed_components/
 
 # Waveshare demo sparse clone used only during bring-up (~700 MB)
 vendor/
+
+# Host preview: rendered frames, and the copy of render.c it builds from
+tools/preview/out/
+tools/preview/render_host.c

@@ -38,6 +38,26 @@
 #define BOX_D 75.0f
 
 #define PX_PER_METER 12677.0f
+#define PX_PER_MM (PX_PER_METER / 1000.0f)
+
+// The panel's corners are rounded, so the box has to be too. With a square box
+// the fluid collects in four corners that are physically not visible, and the
+// box overshoots the glass. Measured at roughly 4.5 mm, which is about 57 px at
+// this panel's 322 ppi.
+#define BOX_CORNER_MM 4.5f
+#define BOX_CORNER_R (BOX_CORNER_MM * PX_PER_MM)
+
+// The case does not meet its own back panel at a sharp edge either, so the
+// walls curve into the backplane over this radius. It has to stay well under
+// both BOX_D and BOX_CORNER_R: the box is only about 5.9 mm deep, so anything
+// near 3 mm turns the back of the box into a dome.
+#define BOX_BACK_FILLET_MM 2.0f
+#define BOX_BACK_FILLET (BOX_BACK_FILLET_MM * PX_PER_MM)
+
+// The glass meets the walls at a much tighter radius than the back panel does.
+// Keep the two fillets summing to well under BOX_D, or the straight section of
+// wall between them disappears.
+#define BOX_FRONT_FILLET (BOX_BACK_FILLET * 0.25f)
 
 // The simulation runs in slow motion. Real water in a 3 cm box sloshes far too
 // fast to see; scaling time down turns it into the syrupy, readable motion
@@ -143,8 +163,9 @@
 
 // Pinhole projection. A particle at the glass draws at full size; one at the
 // back of the case draws at FOCAL/(FOCAL+BOX_D) of that. Shorter focal length
-// means stronger perspective: at 220 the back wall shrinks to about 60% of the
-// front, which is most of what makes the box read as three dimensional.
+// means stronger perspective: at 220 against a 75 deep box, the back of the
+// case works out at about 75% of the front. Since the enclosure itself is never
+// drawn, this and the depth dimming are what make the fluid read as 3D.
 #define PROJ_FOCAL 220.0f
 
 #define PARTICLE_RADIUS_PX 6.5f
@@ -172,14 +193,3 @@
 
 // How much the back of the box is darkened relative to the front.
 #define DEPTH_DIM_MIN 0.20f
-
-// The interior of the back wall, painted so the box is not just empty black.
-#define BOX_BACK_FILL_R 6
-#define BOX_BACK_FILL_G 10
-#define BOX_BACK_FILL_B 22
-
-// Wireframe brightness for the near face, the side struts, and the far face.
-// The falloff is itself a depth cue.
-#define BOX_EDGE_NEAR_R 60
-#define BOX_EDGE_NEAR_G 110
-#define BOX_EDGE_NEAR_B 175
