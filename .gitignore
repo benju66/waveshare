@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# ESP-IDF build output and local config (sdkconfig.defaults is the source of truth)
+fluidbox/build/
+fluidbox/sdkconfig
+fluidbox/sdkconfig.old
+fluidbox/dependencies.lock
+
+# Fetched by the IDF component manager from idf_component.yml
+fluidbox/managed_components/
+
+# Waveshare demo sparse clone used only during bring-up (~700 MB)
+vendor/
