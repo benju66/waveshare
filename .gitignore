@@ -1,6 +1,11 @@
 # macOS
 .DS_Store
 
+# Python (tools/capture.py has no other deps, but keep this clean)
+__pycache__/
+*.pyc
+.venv/
+
 # ESP-IDF build output and local config (sdkconfig.defaults is the source of truth)
 fluidbox/build/
 fluidbox/sdkconfig
