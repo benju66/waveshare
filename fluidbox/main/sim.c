@@ -12,7 +12,10 @@
 
 // Uniform grid used for neighbour lookup. Each cell must be at least one
 // smoothing radius across in every axis, so that a particle's neighbours can
-// only ever lie in the 3x3x3 block of cells around it.
+// only ever lie in the 3x3x3 block of cells around it. These are as fine as
+// SMOOTH_RADIUS 28 permits: 368/13 = 28.3, 448/16 = 28.0 and 75/2 = 37.5. Raise
+// the radius and they have to come down, or particles will miss neighbours in
+// the next cell but one. init() checks this at runtime.
 #define GRID_CX 13
 #define GRID_CY 16
 #define GRID_CZ 2
@@ -54,6 +57,28 @@ static float s_press[PARTICLE_MAX][2];
 static uint16_t s_cell_of[PARTICLE_MAX];
 static uint16_t s_order[PARTICLE_MAX];
 static uint16_t s_cell_start[GRID_CELLS + 1];
+
+// Neighbour pairs found by the density pass, for the relaxation pass to reuse.
+//
+// Both passes need exactly the same pairs, and finding them is far more
+// expensive than using them: the 3x3x3 block of cells around a particle holds
+// about 54 candidates with j > i, of which only about 9 are actually within the
+// smoothing radius. Recording the survivors the first time lets relaxation skip
+// the other 45 entirely, which measured at roughly a third of the solver's total
+// runtime.
+//
+// Stored compressed-row style: pairs for particle i are s_pair[s_pair_off[i] ..
+// s_pair_off[i + 1]). The density pass visits i in ascending order, because
+// particles are sorted by cell and cells are numbered in order, so the offsets
+// can be filled in as it goes without a second pass.
+//
+// Sized for 27 pairs per particle, about twice the worst compression measured.
+// If that is ever not enough the pass says so rather than quietly dropping
+// pairs, and relaxation falls back to walking the grid itself.
+#define PAIR_MAX 24576
+static uint16_t s_pair[PAIR_MAX];
+static uint32_t s_pair_off[PARTICLE_MAX + 1];
+static bool s_pairs_valid;
 static uint16_t s_cursor[GRID_CELLS];
 
 static float s_rest_density;
@@ -278,6 +303,9 @@ static void compute_densities_and_viscosity(float dt)
     memset(s_density_near, 0, sizeof(float) * (size_t)s_count);
     memset(s_visc_delta, 0, sizeof(float) * 3 * (size_t)s_count);
 
+    uint32_t pairs = 0;
+    s_pairs_valid = true;
+
     FOR_EACH_CELL(cx, cy, cz, cell) {
         const int i0 = s_cell_start[cell];
         const int i1 = s_cell_start[cell + 1];
@@ -291,6 +319,8 @@ static void compute_densities_and_viscosity(float dt)
         for (int i = i0; i < i1; i++) {
             const float xi = s_p->pos[i][0], yi = s_p->pos[i][1], zi = s_p->pos[i][2];
             const float vxi = s_p->vel[i][0], vyi = s_p->vel[i][1], vzi = s_p->vel[i][2];
+
+            s_pair_off[i] = pairs;
 
             float rho = s_density[i];
             float rho_near = s_density_near[i];
@@ -308,6 +338,12 @@ static void compute_densities_and_viscosity(float dt)
                     const float r2 = dx * dx + dy * dy + dz * dz;
                     if (r2 >= h2 || r2 < 1e-6f) {
                         continue;
+                    }
+
+                    if (pairs < PAIR_MAX) {
+                        s_pair[pairs++] = (uint16_t)j;
+                    } else {
+                        s_pairs_valid = false;
                     }
 
                     const float r = sqrtf(r2);
@@ -354,6 +390,9 @@ static void compute_densities_and_viscosity(float dt)
         }
     }
 
+    s_pair_off[s_count] = pairs;
+    s_stats.pairs = (int)pairs;
+
     for (int i = 0; i < s_count; i++) {
         for (int a = 0; a < 3; a++) {
             s_p->pos[i][a] += s_visc_delta[i][a];
@@ -361,15 +400,73 @@ static void compute_densities_and_viscosity(float dt)
     }
 }
 
+// One relaxation pair. Both loop shells below share this so the physics exists
+// once; only the way j is arrived at differs.
+//
+// The r2 test stays even on the cached path. Pushes are applied immediately, so
+// a pair recorded by the density pass may already have been driven apart past
+// the smoothing radius by the time it is reached, and it has to drop out exactly
+// as it would have when rediscovered.
+static inline void relax_pair(int i, int j, float xi, float yi, float zi,
+                              float p_i, float pn_i, float dt2, float h2,
+                              float inv_h, float *mx, float *my, float *mz,
+                              int *clamped)
+{
+    const float dx = s_p->pos[j][0] - xi;
+    const float dy = s_p->pos[j][1] - yi;
+    const float dz = s_p->pos[j][2] - zi;
+    const float r2 = dx * dx + dy * dy + dz * dz;
+    if (r2 >= h2 || r2 < 1e-6f) {
+        return;
+    }
+
+    const float r = sqrtf(r2);
+    const float inv_r = 1.0f / r;
+    const float q = 1.0f - r * inv_h;
+    const float q2 = q * q;
+
+    const float p_j = s_press[j][0];
+    const float pn_j = s_press[j][1];
+
+    // Each particle pushes according to its own pressure; summing both halves
+    // keeps the pair symmetric, so momentum is conserved and the pair is
+    // visited once.
+    float d = 0.5f * dt2 * ((p_i + p_j) * q + (pn_i + pn_j) * q2);
+    if (d > MAX_DISPLACEMENT) {
+        d = MAX_DISPLACEMENT;
+        (*clamped)++;
+    } else if (d < -MAX_DISPLACEMENT) {
+        d = -MAX_DISPLACEMENT;
+        (*clamped)++;
+    }
+
+    const float sx = dx * inv_r * d;
+    const float sy = dy * inv_r * d;
+    const float sz = dz * inv_r * d;
+
+    s_p->pos[j][0] += sx;
+    s_p->pos[j][1] += sy;
+    s_p->pos[j][2] += sz;
+    *mx -= sx;
+    *my -= sy;
+    *mz -= sz;
+}
+
 // Double density relaxation. Ordinary pressure is signed, so a particle in a
 // too-sparse region is pulled back towards its neighbours, which gives the
 // fluid a cohesive surface. The near pressure is always repulsive and is what
 // stops particles from piling up into clumps.
+//
+// Pushes are applied straight away rather than gathered up and applied at the
+// end, so later pairs already see the corrected positions. That converges faster
+// in dense regions, at the cost of the rare corner blow-up noted in the README.
 static void relax_positions(float dt)
 {
     const float h2 = SMOOTH_RADIUS * SMOOTH_RADIUS;
     const float inv_h = 1.0f / SMOOTH_RADIUS;
     const float dt2 = dt * dt;
+
+    int clamped = 0;
 
     // Turn densities into pressures once, rather than for every pair.
     for (int i = 0; i < s_count; i++) {
@@ -377,79 +474,63 @@ static void relax_positions(float dt)
         s_press[i][1] = K_NEAR_PRESSURE * s_density_near[i];
     }
 
-    FOR_EACH_CELL(cx, cy, cz, cell) {
-        const int i0 = s_cell_start[cell];
-        const int i1 = s_cell_start[cell + 1];
-        if (i0 == i1) {
-            continue;
-        }
-
-        neighbourhood_t nb;
-        neighbourhood_for_cell(cx, cy, cz, &nb);
-
-        for (int i = i0; i < i1; i++) {
+    if (s_pairs_valid) {
+        for (int i = 0; i < s_count; i++) {
             const float xi = s_p->pos[i][0], yi = s_p->pos[i][1], zi = s_p->pos[i][2];
             const float p_i = s_press[i][0];
             const float pn_i = s_press[i][1];
 
             float mx = 0.0f, my = 0.0f, mz = 0.0f;  // accumulated move for i
 
-            for (int run = 0; run < nb.runs; run++) {
-                int j = nb.start[run];
-                if (j <= i) {
-                    j = i + 1;
-                }
-                for (; j < nb.end[run]; j++) {
-                    const float dx = s_p->pos[j][0] - xi;
-                    const float dy = s_p->pos[j][1] - yi;
-                    const float dz = s_p->pos[j][2] - zi;
-                    const float r2 = dx * dx + dy * dy + dz * dz;
-                    if (r2 >= h2 || r2 < 1e-6f) {
-                        continue;
-                    }
-
-                    const float r = sqrtf(r2);
-                    const float inv_r = 1.0f / r;
-                    const float q = 1.0f - r * inv_h;
-                    const float q2 = q * q;
-
-                    const float p_j = s_press[j][0];
-                    const float pn_j = s_press[j][1];
-
-                    // Each particle pushes according to its own pressure;
-                    // summing both halves keeps the pair symmetric, so
-                    // momentum is conserved and the pair is visited once.
-                    //
-                    // The push is applied straight away rather than gathered
-                    // up and applied at the end, so later pairs already see
-                    // the corrected positions. That converges faster in dense
-                    // regions, at the cost of the rare corner blow-up noted in
-                    // the README.
-                    float d = 0.5f * dt2 * ((p_i + p_j) * q + (pn_i + pn_j) * q2);
-                    if (d > MAX_DISPLACEMENT) {
-                        d = MAX_DISPLACEMENT;
-                    } else if (d < -MAX_DISPLACEMENT) {
-                        d = -MAX_DISPLACEMENT;
-                    }
-
-                    const float sx = dx * inv_r * d;
-                    const float sy = dy * inv_r * d;
-                    const float sz = dz * inv_r * d;
-
-                    s_p->pos[j][0] += sx;
-                    s_p->pos[j][1] += sy;
-                    s_p->pos[j][2] += sz;
-                    mx -= sx;
-                    my -= sy;
-                    mz -= sz;
-                }
+            const uint32_t k1 = s_pair_off[i + 1];
+            for (uint32_t k = s_pair_off[i]; k < k1; k++) {
+                relax_pair(i, s_pair[k], xi, yi, zi, p_i, pn_i, dt2, h2, inv_h,
+                           &mx, &my, &mz, &clamped);
             }
 
             s_p->pos[i][0] += mx;
             s_p->pos[i][1] += my;
             s_p->pos[i][2] += mz;
         }
+    } else {
+        // The pair list overflowed, so find the neighbours the hard way.
+        FOR_EACH_CELL(cx, cy, cz, cell) {
+            const int i0 = s_cell_start[cell];
+            const int i1 = s_cell_start[cell + 1];
+            if (i0 == i1) {
+                continue;
+            }
+
+            neighbourhood_t nb;
+            neighbourhood_for_cell(cx, cy, cz, &nb);
+
+            for (int i = i0; i < i1; i++) {
+                const float xi = s_p->pos[i][0], yi = s_p->pos[i][1],
+                            zi = s_p->pos[i][2];
+                const float p_i = s_press[i][0];
+                const float pn_i = s_press[i][1];
+
+                float mx = 0.0f, my = 0.0f, mz = 0.0f;
+
+                for (int run = 0; run < nb.runs; run++) {
+                    int j = nb.start[run];
+                    if (j <= i) {
+                        j = i + 1;
+                    }
+                    for (; j < nb.end[run]; j++) {
+                        relax_pair(i, j, xi, yi, zi, p_i, pn_i, dt2, h2, inv_h,
+                                   &mx, &my, &mz, &clamped);
+                    }
+                }
+
+                s_p->pos[i][0] += mx;
+                s_p->pos[i][1] += my;
+                s_p->pos[i][2] += mz;
+            }
+        }
     }
+
+    s_stats.clamped = clamped;
 }
 
 // The interior of the case: a rounded rectangle in x and y, extruded through
@@ -469,6 +550,11 @@ static void relax_positions(float dt)
 // panel both do at once, which is the doubly-curved patch.
 static void resolve_walls(void)
 {
+    s_stats.front_hits = 0;
+    s_stats.back_hits = 0;
+    s_stats.front_push = 0.0f;
+    s_stats.back_push = 0.0f;
+
     const float lo_z = WALL_MARGIN;
     const float hi_z = BOX_D - WALL_MARGIN;
 
@@ -531,9 +617,24 @@ static void resolve_walls(void)
         const float nr = dr / dd;
         const float nz = dz / dd;
 
-        s_p->pos[i][0] = ax + ux * (cr + nr * fillet);
-        s_p->pos[i][1] = ay + uy * (cr + nr * fillet);
-        s_p->pos[i][2] = cz + nz * fillet;
+        // Land a random fraction of a pixel inside the surface rather than
+        // exactly on it, so a corner does not stack particles onto one point.
+        // Offsetting along the normal is the same as shrinking the fillet radius
+        // by that amount, which also covers the straight walls, where the radius
+        // is zero.
+        const float inset = fillet - WALL_JITTER * rand_unit();
+
+        s_p->pos[i][0] = ax + ux * (cr + nr * inset);
+        s_p->pos[i][1] = ay + uy * (cr + nr * inset);
+        s_p->pos[i][2] = cz + nz * inset;
+
+        if (z < lo_z + front_f) {
+            s_stats.front_hits++;
+            s_stats.front_push += dd - fillet;
+        } else if (z > hi_z - back_f) {
+            s_stats.back_hits++;
+            s_stats.back_push += dd - fillet;
+        }
 
         // The surface normal in three dimensions: the in-plane direction scaled
         // by how much of the offset was radial, plus the depth part.
@@ -646,6 +747,13 @@ static void publish(void)
 {
     float sum_rho = 0.0f, sum_speed = 0.0f, max_speed = 0.0f;
 
+    // Split the same sums over the two fillet bands, to compare how the fluid
+    // behaves against the glass with how it behaves against the back panel.
+    const float front_edge = WALL_MARGIN + BOX_FRONT_FILLET;
+    const float back_edge = BOX_D - WALL_MARGIN - BOX_BACK_FILLET;
+    float f_rho = 0.0f, f_speed = 0.0f, b_rho = 0.0f, b_speed = 0.0f;
+    int f_n = 0, b_n = 0;
+
     for (int i = 0; i < s_count; i++) {
         const float vx = s_p->vel[i][0], vy = s_p->vel[i][1], vz = s_p->vel[i][2];
         const float speed = sqrtf(vx * vx + vy * vy + vz * vz);
@@ -660,6 +768,17 @@ static void publish(void)
         if (speed > max_speed) {
             max_speed = speed;
         }
+
+        const float z = s_p->pos[i][2];
+        if (z < front_edge) {
+            f_rho += s_density[i];
+            f_speed += speed;
+            f_n++;
+        } else if (z > back_edge) {
+            b_rho += s_density[i];
+            b_speed += speed;
+            b_n++;
+        }
     }
 
     const float inv_n = 1.0f / (float)s_count;
@@ -667,6 +786,19 @@ static void publish(void)
     s_stats.rest_density = s_rest_density;
     s_stats.mean_speed = sum_speed * inv_n;
     s_stats.max_speed = max_speed;
+
+    s_stats.front_count = f_n;
+    s_stats.back_count = b_n;
+    s_stats.front_density = f_n ? f_rho / (float)f_n : 0.0f;
+    s_stats.back_density = b_n ? b_rho / (float)b_n : 0.0f;
+    s_stats.front_speed = f_n ? f_speed / (float)f_n : 0.0f;
+    s_stats.back_speed = b_n ? b_speed / (float)b_n : 0.0f;
+    if (s_stats.front_hits) {
+        s_stats.front_push /= (float)s_stats.front_hits;
+    }
+    if (s_stats.back_hits) {
+        s_stats.back_push /= (float)s_stats.back_hits;
+    }
 
     xSemaphoreTake(s_view_lock, portMAX_DELAY);
     sim_particle_view_t *swap = s_view_pub;
@@ -680,7 +812,14 @@ void sim_step(float dt_real, const sim_forces_t *forces)
 {
     // Everything runs in slowed-down time, including the angular rates, so
     // gravity, shake and rotation stay in proportion to each other.
-    const float dt = (dt_real * TIME_SCALE) / (float)SUBSTEPS;
+    //
+    // Capped, because the solver's stability depends on dt but its runtime does
+    // not depend on dt at all: a slow step must not also be a stiff one. See
+    // SIM_DT_MAX.
+    float dt = (dt_real * TIME_SCALE) / (float)SUBSTEPS;
+    if (dt > SIM_DT_MAX) {
+        dt = SIM_DT_MAX;
+    }
 
     sim_forces_t scaled = *forces;
     for (int a = 0; a < 3; a++) {

@@ -161,7 +161,7 @@ bool imu_read(float dt, sim_forces_t *out)
         dz = 0.0f;
     }
 
-    const float g_px = GRAVITY_MPS2 * PX_PER_METER;
+    const float g_px = GRAVITY_GAIN * GRAVITY_MPS2 * PX_PER_METER;
 
     // What is left after removing gravity is the box's own acceleration. In
     // the box's frame the contents feel that as a push the other way.

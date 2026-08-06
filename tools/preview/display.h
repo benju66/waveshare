@@ -10,6 +10,5 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-void display_wait_buffer(int band_index);
-uint16_t *display_band_buffer(int band_index);
+uint16_t *display_acquire_band(void);
 int display_flush_band(int band_index, const uint16_t *buffer);

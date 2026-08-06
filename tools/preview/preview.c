@@ -25,14 +25,10 @@ static uint16_t s_frame[LCD_V_RES * LCD_H_RES];
 
 static int s_particle_count;
 
-void display_wait_buffer(int band_index)
+uint16_t *display_acquire_band(void)
 {
-    (void)band_index;
-}
-
-uint16_t *display_band_buffer(int band_index)
-{
-    return s_bands[band_index & 1];
+    static unsigned next;
+    return s_bands[next++ & 1];
 }
 
 int display_flush_band(int band_index, const uint16_t *buffer)
@@ -42,20 +38,23 @@ int display_flush_band(int band_index, const uint16_t *buffer)
     return 0;
 }
 
-// Stands in for the solver: a lattice filling the lower part of the box, which
-// is enough to show where the fluid sits relative to the walls.
+// Stands in for the solver: a lattice at the rest spacing filling the lower part
+// of the box, which is enough to judge whether neighbouring particles read as
+// one body of liquid or as separate dots.
 int sim_snapshot(sim_particle_view_t *out, int max)
 {
     const int n = s_particle_count < max ? s_particle_count : max;
-    const int per_row = 20;
-    const int per_layer = per_row * 3;
+    const float step = REST_SPACING;
+    const int per_row = (int)((BOX_W - 40.0f) / step);
+    const int layers_z = (int)((BOX_D - 20.0f) / step);
+    const int per_layer = per_row * (layers_z > 0 ? layers_z : 1);
 
     for (int i = 0; i < n; i++) {
         const int layer = i / per_layer;
         const int rem = i % per_layer;
-        out[i].x = 20.0f + (float)(rem % per_row) * 17.0f;
-        out[i].y = BOX_H - 20.0f - (float)layer * 17.0f;
-        out[i].z = 10.0f + (float)(rem / per_row) * 22.0f;
+        out[i].x = 20.0f + (float)(rem % per_row) * step;
+        out[i].y = BOX_H - 20.0f - (float)layer * step;
+        out[i].z = 10.0f + (float)(rem / per_row) * step;
         out[i].speed = 60.0f;
     }
     return n;

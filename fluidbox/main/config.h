@@ -72,7 +72,42 @@
 // compromise, and it is the first thing to lower if the surface looks noisy.
 #define TIME_SCALE 0.100f
 
+// Ceiling on the physics timestep, in scaled seconds per substep.
+//
+// This is a stability limit, not a pacing one, and it matters more than any
+// other constant here. Relaxation displacement scales as dt^2, so a step that
+// takes longer than usual does not merely advance further, it advances with a
+// quadratically stiffer solver. Without a ceiling that closes a loop: a deep
+// pool gives every particle more neighbours, which slows the solver, which
+// raises dt, which grows the displacements until they saturate
+// MAX_DISPLACEMENT, and a saturated displacement becomes velocity of about
+// MAX_DISPLACEMENT/dt — roughly 1000 px/s of pure invention. That agitates the
+// fluid, which clusters it further, which slows the solver again.
+//
+// Measured: at 39 steps/s the fluid settles, at 25 steps/s a fifth of all pairs
+// were clamped and the whole box simmered at 1800 px/s regardless of how still
+// the board was held. 2.7 ms corresponds to about 37 steps/s, so above that
+// rate the fluid still runs in real time; below it the fluid runs slow instead
+// of running unstable, which is invisible next to a solver that never settles.
+#define SIM_DT_MAX 0.0022f
+
 #define GRAVITY_MPS2 9.81f
+
+// Extra weight, to buy back the pace lost to the timestep ceiling.
+//
+// SIM_DT_MAX caps how much scaled time each step may advance, so whenever the
+// solver runs slower than about 45 steps/s the fluid advances less than
+// TIME_SCALE asks for and visibly drags. Gravity is the right knob to make up
+// the difference: fall distance goes as g * t^2, so a stronger pull restores the
+// pace without touching dt, and dt is the only thing the solver's stability
+// actually depends on. Turning this up is always safe for stability, unlike
+// turning up TIME_SCALE, which is not.
+// 2.2 measured: at rest the fluid runs at 150-250 px/s, which at a 2.2 ms step
+// is a third of a pixel of overlap per step against a 4 px allowance, so there is
+// a wide margin before displacement clamping — the thing that used to inject
+// energy — can restart. Shaking hard does reach it, but nobody can see extra
+// energy in fluid that is already being thrown across the box.
+#define GRAVITY_GAIN 2.2f
 
 // ---------------------------------------------------------------------------
 // Particles
@@ -92,8 +127,17 @@
 // Distance between neighbouring particles when the fluid is at rest.
 #define REST_SPACING 17.0f
 
-// Interaction radius. Larger means smoother fluid but quadratically more
-// neighbour work; 1.65x spacing gives roughly 15 neighbours per particle.
+// Interaction radius. Larger means smoother fluid but cubically more neighbour
+// work; 1.65x spacing gives roughly 18 neighbours per particle.
+//
+// Tempting as it looks as a performance knob, it is not one. Dropping it to 24
+// (1.41x) was measured: the kernel weight at rest spacing is (1 - r/h)^2, so a
+// narrower kernel does not just find fewer neighbours, it weakens the pressure
+// response between the ones it keeps. Rest density fell 1.17 -> 0.51 and the
+// fluid then compressed to 1.7x its rest density instead of 1.1x, packing
+// neighbours back in and returning only 15% of the 30% saving, in exchange for a
+// visibly squashed body of liquid. Retuning K to compensate raises stiffness,
+// which costs the timestep straight back. Leave it at 1.65x.
 #define SMOOTH_RADIUS 28.0f
 
 // One relaxation pass per frame. The solver is position based, so a single
@@ -108,6 +152,16 @@
 // PRESSURE keeps the bulk at rest density and, being signed, also pulls the
 // surface together like surface tension. NEAR_PRESSURE is always repulsive and
 // stops particles collapsing onto each other.
+// Do not trade these away for a larger timestep. Displacement goes as
+// K * dt^2, so quartering the stiffness does buy a doubling of dt at the same
+// displacement per step, and it looks like a free way to make the fluid run at
+// full speed. Measured, it is the opposite: at a quarter stiffness a tilted pool
+// settled at 2.4 times rest density instead of 1.2, and a compressed pool packs
+// every particle in among more neighbours, so the density and relaxation passes
+// each doubled to 22 ms and the step rate fell from 25/s to 18/s.
+//
+// Density drives solver cost, and solver cost drives the step rate, so a softer
+// fluid ends up being a slower fluid. Keeping the fluid stiff keeps it cheap.
 #define K_PRESSURE 400000.0f
 #define K_NEAR_PRESSURE 800000.0f
 
@@ -115,6 +169,21 @@
 // pixels. Deliberately a per-pair limit rather than a per-particle one; see the
 // note on corner behaviour in the README.
 #define MAX_DISPLACEMENT 4.0f
+
+// Wall projection lands a particle up to this many pixels inside the surface,
+// chosen at random, instead of exactly on it.
+//
+// This is what stops a tight corner from stacking particles on one point. The
+// projection maps a whole wedge of space onto a short arc, so without the
+// jitter every particle arriving at a corner ends up with near-identical
+// coordinates. Pairs that close are dropped by the solver as degenerate, so
+// they sit welded together while still inflating their neighbours' density
+// until the relaxation throws something out — the corner "jump". Nudging them
+// apart as they land costs nothing and removes the degenerate case at source.
+//
+// It is applied after velocity has been recovered from the step's motion, so it
+// shifts positions without injecting any velocity of its own.
+#define WALL_JITTER 0.35f
 
 // Clavet viscosity: linear and quadratic terms applied to the closing speed
 // between neighbours. Higher is thicker, more honey than water. Speeds here
@@ -168,11 +237,23 @@
 // drawn, this and the depth dimming are what make the fluid read as 3D.
 #define PROJ_FOCAL 220.0f
 
+// Drawn radius, at the glass; particles further back shrink with perspective.
+//
+// Well under half the rest spacing of 17, so discs stay separate and the fluid
+// reads as distinct beads with gaps between them rather than as one continuous
+// surface. Pushing this past about 0.5x the spacing closes the gaps and the
+// individual particles merge into a single body of liquid — a different look,
+// and deliberately not this one.
 #define PARTICLE_RADIUS_PX 6.5f
 #define DISC_MAX_R 10
 
 // A smaller, brighter disc offset towards the top left of each particle, which
 // turns a flat circle into something that reads as a lit sphere.
+//
+// This only works while the discs are separate. If PARTICLE_RADIUS_PX is ever
+// raised far enough that they overlap into a continuous surface, nothing hides
+// the neighbouring highlights any more and they stop reading as spheres and
+// start reading as a regular grid of pale dots.
 #define HIGHLIGHT_ENABLE 1
 #define HIGHLIGHT_LIFT 0.55f  // 0 = no lift, 1 = pure white
 
@@ -191,5 +272,8 @@
 // low end, so gentle motion still shows colour while white stays rare.
 #define SPEED_COLOR_GAMMA 0.55f
 
-// How much the back of the box is darkened relative to the front.
-#define DEPTH_DIM_MIN 0.20f
+// Brightness of the far plane relative to the near one, so this is the floor of
+// the depth ramp rather than the strength of it: the darkening applied is
+// 1 - DEPTH_DIM_MIN. At 0.60 the back of the box is dimmed by 40%, half as much
+// as the 80% it started at.
+#define DEPTH_DIM_MIN 0.60f

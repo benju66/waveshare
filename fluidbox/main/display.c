@@ -130,17 +130,17 @@ esp_err_t display_init(i2c_master_bus_handle_t i2c_bus)
     return ESP_OK;
 }
 
-void display_wait_buffer(int band_index)
+uint16_t *display_acquire_band(void)
 {
-    (void)band_index;
-    // Transfers complete in the order they were queued, so acquiring any free
-    // slot guarantees the alternating buffer we are about to use is idle.
+    // Transfers complete in the order they were queued, so once a slot frees up
+    // the next buffer in rotation is guaranteed idle. The rotation counts
+    // acquisitions rather than band indices: the renderer leaves out bands that
+    // are already black, and keying off the band index would then hand the same
+    // buffer to two transfers still in flight.
     xSemaphoreTake(s_buffers_free, portMAX_DELAY);
-}
 
-uint16_t *display_band_buffer(int band_index)
-{
-    return s_band_buf[band_index & 1];
+    static unsigned next;
+    return s_band_buf[next++ & 1];
 }
 
 esp_err_t display_flush_band(int band_index, const uint16_t *buffer)

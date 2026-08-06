@@ -18,6 +18,14 @@ static uint16_t s_highlight_lut[DEPTH_LEVELS * SPEED_LEVELS];
 // Half-width of a filled disc, indexed by radius then by row offset.
 static uint8_t s_disc_span[DISC_MAX_R + 1][2 * DISC_MAX_R + 1];
 
+// Which bands any particle falls in, this frame and last. A band that is empty
+// now and was empty last frame is already black on the panel, so it needs
+// neither clearing nor transmitting. With the fluid pooled in the bottom third
+// of the screen that removes most of the frame, and since the panel transfer is
+// what paces the loop, the frame rate goes up by roughly the same proportion.
+static bool s_band_used[BAND_COUNT];
+static bool s_band_used_prev[BAND_COUNT];
+
 // Projected particles for the current frame.
 static sim_particle_view_t s_snapshot[PARTICLE_MAX];
 static int16_t s_sx[PARTICLE_MAX];
@@ -102,7 +110,6 @@ static void build_color_lut(void)
             s_highlight_lut[d * SPEED_LEVELS + s] = SWAP16(rgb565(hr, hg, hb));
         }
     }
-
 }
 
 static void build_disc_spans(void)
@@ -127,6 +134,12 @@ void render_init(void)
 {
     build_color_lut();
     build_disc_spans();
+
+    // The panel's contents are undefined until we have written every band once,
+    // so the first frame must not skip any.
+    for (int b = 0; b < BAND_COUNT; b++) {
+        s_band_used_prev[b] = true;
+    }
 }
 
 static inline void draw_disc(uint16_t *buf, int band_y0, int cx, int cy, int r, uint16_t color)
@@ -164,6 +177,8 @@ static void project_all(int n)
     const float speed_scale = (float)(SPEED_LEVELS - 1) / SPEED_COLOR_MAX;
     const float depth_scale = (float)(DEPTH_LEVELS - 1) / BOX_D;
 
+    memset(s_band_used, 0, sizeof(s_band_used));
+
     for (int i = 0; i < n; i++) {
         int sx, sy;
         float scale;
@@ -188,6 +203,20 @@ static void project_all(int n)
         const int lut = dl * SPEED_LEVELS + sl;
         s_sc[i] = s_color_lut[lut];
         s_sh[i] = s_highlight_lut[lut];
+
+        // The highlight sits up and left of the disc by r/3 with radius r/2, so
+        // it never reaches beyond the disc's own rows and this extent covers
+        // both.
+        const int top = sy - r;
+        const int bot = sy + r;
+        if (bot < 0 || top >= LCD_V_RES) {
+            continue;
+        }
+        const int b0 = (top < 0) ? 0 : top / BAND_ROWS;
+        const int b1 = (bot >= LCD_V_RES) ? (BAND_COUNT - 1) : bot / BAND_ROWS;
+        for (int b = b0; b <= b1; b++) {
+            s_band_used[b] = true;
+        }
     }
 }
 
@@ -197,16 +226,28 @@ void render_frame(void)
     project_all(n);
 
     for (int band = 0; band < BAND_COUNT; band++) {
+        // Empty now and empty last time means the panel is already showing black
+        // here, so there is nothing to send.
+        if (!s_band_used[band] && !s_band_used_prev[band]) {
+            continue;
+        }
+
         const int band_y0 = band * BAND_ROWS;
         const int band_y1 = band_y0 + BAND_ROWS;
 
-        display_wait_buffer(band);
-        uint16_t *buf = display_band_buffer(band);
+        uint16_t *buf = display_acquire_band();
 
         // Nothing is drawn but the fluid: no box, no wall, no frame. The
         // enclosure exists only in the physics, and reads purely from how the
         // particles pile up against it.
         memset(buf, 0, BAND_PIXELS * sizeof(uint16_t));
+
+        // Reaching here with nothing to draw means the band held fluid last
+        // frame and does not now: the clear above is the whole job.
+        if (!s_band_used[band]) {
+            display_flush_band(band, buf);
+            continue;
+        }
 
         // The simulation publishes particles sorted by depth ascending, so
         // walking backwards paints far particles first and near ones over the
@@ -230,4 +271,6 @@ void render_frame(void)
 
         display_flush_band(band, buf);
     }
+
+    memcpy(s_band_used_prev, s_band_used, sizeof(s_band_used));
 }

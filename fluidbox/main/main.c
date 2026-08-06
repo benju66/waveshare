@@ -73,7 +73,7 @@ static void sim_task(void *arg)
 
     // Straight down the screen until the IMU produces its first sample.
     sim_forces_t forces = {
-        .gravity = {0.0f, GRAVITY_MPS2 * PX_PER_METER, 0.0f},
+        .gravity = {0.0f, GRAVITY_GAIN * GRAVITY_MPS2 * PX_PER_METER, 0.0f},
         .omega = {0.0f, 0.0f, 0.0f},
         .alpha = {0.0f, 0.0f, 0.0f},
     };
@@ -142,6 +142,18 @@ static void stats_loop(void)
                  (double)st.mean_speed, (double)st.max_speed,
                  (double)accel[0], (double)accel[1], (double)accel[2],
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+        // Front band against back band. The fluid settles against the back panel
+        // but not against the glass, so these two should differ in exactly the
+        // quantity responsible.
+        ESP_LOGI(TAG,
+                 "  front n=%3d rho %.2f v %6.0f hits %3d push %.3f | "
+                 "back n=%3d rho %.2f v %6.0f hits %3d push %.3f | "
+                 "clamped %d | pairs %d",
+                 st.front_count, (double)st.front_density, (double)st.front_speed,
+                 st.front_hits, (double)st.front_push,
+                 st.back_count, (double)st.back_density, (double)st.back_speed,
+                 st.back_hits, (double)st.back_push, st.clamped, st.pairs);
 
         last_frames = frames;
         last_steps = steps;

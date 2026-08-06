@@ -27,6 +27,18 @@ typedef struct {
     int us_grid;
     int us_density;  // includes viscosity; the two share one pass
     int us_relax;
+
+    // Front and back fillet bands compared against each other. The fluid
+    // settles against the back of the case but not against the glass, and these
+    // are here to say why: whether the front is denser, moving faster, being
+    // pushed further by the wall, or saturating the per-pair displacement cap.
+    float front_density, back_density;
+    float front_speed, back_speed;
+    float front_push, back_push;  // mean wall projection distance, px
+    int front_count, back_count;
+    int front_hits, back_hits;    // particles the wall had to move
+    int clamped;                  // pairs that saturated MAX_DISPLACEMENT
+    int pairs;                    // neighbour pairs cached for relaxation
 } sim_stats_t;
 
 void sim_init(void);
