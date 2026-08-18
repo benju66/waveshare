@@ -67,3 +67,10 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
 # TLS handshakes (PSRAM-resident mbedTLS sharing a core with the sim) can
 # legitimately monopolize CPU1 for stretches; don't page the watchdog over it.
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# Hardware AES wants a large DMA-capable internal buffer to process the
+# 16 KB TLS records GitHub sends, and internal RAM is exactly what this
+# firmware does not have spare ("esp-aes: Failed to allocate memory",
+# observed). Software AES is slower but indifferent to where data lives;
+# it only matters for the ~minute an OTA download runs.
+CONFIG_MBEDTLS_HARDWARE_AES=n
