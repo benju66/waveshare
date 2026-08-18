@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "config.h"
 #include "esp_log.h"
@@ -107,7 +108,14 @@ static void on_phase_deadline(void *arg)
         }
         next = POMO_WORK;
     }
-    enter_phase_locked(next);
+    // Advance to the next phase but do NOT start its countdown: the alert
+    // announces the change and the user's tap begins it. A timer that rolls
+    // on unattended punishes stepping away for thirty seconds.
+    s_st.phase = next;
+    s_st.running = false;
+    s_st.flip_paused = false;
+    s_st.remaining_us = phase_duration_us(next);
+    arm_phase_timer_locked();  // stops the timer, since nothing is running
     const int works = s_st.works_done;
     xSemaphoreGive(s_lock);
 
@@ -230,9 +238,12 @@ static lv_color_t phase_color(pomo_phase_t phase, bool running)
 // lv_anim position tweens; each dot fades and deletes itself.
 // ---------------------------------------------------------------------------
 
-#define FW_DOTS 20
-#define FW_MS 1100
-#define FW_RADIUS 170
+#define FW_WAVES 3
+#define FW_DOTS_PER_WAVE 14
+#define FW_MS 1300
+#define FW_WAVE_GAP_MS 260
+#define FW_RADIUS_MIN 80
+#define FW_RADIUS_MAX 185
 
 static void fw_set_x(void *obj, int32_t v) { lv_obj_set_x(obj, v); }
 static void fw_set_y(void *obj, int32_t v) { lv_obj_set_y(obj, v); }
@@ -242,48 +253,66 @@ static void fw_done(lv_anim_t *a)
     lv_obj_delete((lv_obj_t *)a->var);
 }
 
+// Three staggered waves of dots with jittered angles, radii and sizes, each
+// arcing outward with a touch of downward drift so it reads as sparks
+// falling rather than a tidy expanding ring.
 static void fireworks_start(void)
 {
     static const lv_palette_t colors[] = {LV_PALETTE_RED, LV_PALETTE_AMBER,
                                           LV_PALETTE_GREEN, LV_PALETTE_LIGHT_BLUE,
-                                          LV_PALETTE_PURPLE};
-    const int cx = LCD_H_RES / 2 - 4;
-    const int cy = LCD_V_RES / 2 - 4;
+                                          LV_PALETTE_PURPLE, LV_PALETTE_PINK};
 
-    for (int i = 0; i < FW_DOTS; i++) {
-        lv_obj_t *dot = lv_obj_create(s_screen);
-        lv_obj_set_size(dot, 8, 8);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(
-            dot, lv_palette_main(colors[i % (sizeof(colors) / sizeof(colors[0]))]), 0);
-        lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_pos(dot, cx, cy);
+    for (int wave = 0; wave < FW_WAVES; wave++) {
+        const uint32_t delay = wave * FW_WAVE_GAP_MS;
+        // Later waves start slightly off-center, like secondary shells.
+        const int cx = LCD_H_RES / 2 + (rand() % 61 - 30) * wave;
+        const int cy = LCD_V_RES / 2 + (rand() % 41 - 20) * wave;
 
-        // Two rings of dots so it reads as a burst rather than a circle.
-        const float angle = (float)i * (2.0f * (float)M_PI / FW_DOTS);
-        const int r = (i & 1) ? FW_RADIUS : FW_RADIUS * 2 / 3;
+        for (int i = 0; i < FW_DOTS_PER_WAVE; i++) {
+            const int size = 5 + rand() % 6;
+            lv_obj_t *dot = lv_obj_create(s_screen);
+            lv_obj_set_size(dot, size, size);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(
+                dot, lv_palette_main(colors[rand() % (sizeof(colors) / sizeof(colors[0]))]),
+                0);
+            lv_obj_set_style_border_width(dot, 0, 0);
+            lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_pos(dot, cx, cy);
+            // Born transparent; the delayed fade-in reveals it at wave start.
+            lv_obj_set_style_opa(dot, LV_OPA_TRANSP, 0);
 
-        lv_anim_t ax;
-        lv_anim_init(&ax);
-        lv_anim_set_var(&ax, dot);
-        lv_anim_set_exec_cb(&ax, fw_set_x);
-        lv_anim_set_values(&ax, cx, cx + (int32_t)(r * cosf(angle)));
-        lv_anim_set_duration(&ax, FW_MS);
-        lv_anim_set_path_cb(&ax, lv_anim_path_ease_out);
-        lv_anim_start(&ax);
+            const float jitter = ((float)(rand() % 100) / 100.0f - 0.5f) * 0.4f;
+            const float angle =
+                (float)i * (2.0f * (float)M_PI / FW_DOTS_PER_WAVE) + jitter;
+            const int r = FW_RADIUS_MIN + rand() % (FW_RADIUS_MAX - FW_RADIUS_MIN);
 
-        lv_anim_t ay;
-        lv_anim_init(&ay);
-        lv_anim_set_var(&ay, dot);
-        lv_anim_set_exec_cb(&ay, fw_set_y);
-        lv_anim_set_values(&ay, cy, cy + (int32_t)(r * sinf(angle)));
-        lv_anim_set_duration(&ay, FW_MS);
-        lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
-        lv_anim_set_completed_cb(&ay, fw_done);  // last anim to finish cleans up
-        lv_anim_start(&ay);
+            lv_anim_t ax;
+            lv_anim_init(&ax);
+            lv_anim_set_var(&ax, dot);
+            lv_anim_set_exec_cb(&ax, fw_set_x);
+            lv_anim_set_values(&ax, cx, cx + (int32_t)(r * cosf(angle)));
+            lv_anim_set_duration(&ax, FW_MS);
+            lv_anim_set_delay(&ax, delay);
+            lv_anim_set_path_cb(&ax, lv_anim_path_ease_out);
+            lv_anim_start(&ax);
 
-        lv_obj_fade_out(dot, FW_MS / 2, FW_MS / 2);
+            lv_anim_t ay;
+            lv_anim_init(&ay);
+            lv_anim_set_var(&ay, dot);
+            lv_anim_set_exec_cb(&ay, fw_set_y);
+            // +25 px of sag at the end of the arc: gravity, cheaply.
+            lv_anim_set_values(&ay, cy, cy + (int32_t)(r * sinf(angle)) + 25);
+            lv_anim_set_duration(&ay, FW_MS);
+            lv_anim_set_delay(&ay, delay);
+            lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
+            lv_anim_set_completed_cb(&ay, fw_done);  // fires after delay + duration
+            lv_anim_start(&ay);
+
+            // Reveal at wave start, burn bright, fade over the back half.
+            lv_obj_fade_in(dot, 60, delay);
+            lv_obj_fade_out(dot, FW_MS / 2, delay + FW_MS / 2);
+        }
     }
 }
 
@@ -302,8 +331,14 @@ static void refresh_ui(lv_timer_t *timer)
                           remaining_s % 60);
 
     const char *phase_text = "tap to start";
-    if (phase == POMO_WORK) phase_text = running ? "work" : "paused";
-    else if (phase != POMO_IDLE) phase_text = running ? "break" : "paused";
+    if (phase != POMO_IDLE) {
+        const bool fresh = remaining_us == total_us;  // ended phase, unstarted next
+        if (phase == POMO_WORK) {
+            phase_text = running ? "work" : (fresh ? "tap to start work" : "work paused");
+        } else {
+            phase_text = running ? "break" : (fresh ? "tap to start break" : "break paused");
+        }
+    }
     lv_label_set_text(s_phase_label, phase_text);
 
     lv_arc_set_value(s_arc, (int32_t)(remaining_us * ARC_MAX / total_us));

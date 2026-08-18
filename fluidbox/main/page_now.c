@@ -46,19 +46,21 @@ static void refresh_ui(lv_timer_t *timer)
     struct tm tm_now;
     localtime_r(&now, &tm_now);
     if (tm_now.tm_year > 100) {
-        lv_label_set_text_fmt(s_clock_label, "%d:%02d", tm_now.tm_hour,
-                              tm_now.tm_min);
+        int hour12 = tm_now.tm_hour % 12;
+        if (hour12 == 0) hour12 = 12;
+        lv_label_set_text_fmt(s_clock_label, "%d:%02d %s", hour12, tm_now.tm_min,
+                              tm_now.tm_hour < 12 ? "am" : "pm");
     } else {
         lv_label_set_text(s_clock_label, "--:--");
     }
 
     weather_model_t wx;
     if (weather_get(&wx)) {
-        lv_label_set_text_fmt(s_temp_label, "%d\xC2\xB0", (int)(wx.temp_c + 0.5f));
+        lv_label_set_text_fmt(s_temp_label, "%d\xC2\xB0", (int)(wx.temp + 0.5f));
         lv_label_set_text(s_cond_label, weather_text(wx.weather_code));
         lv_label_set_text_fmt(s_range_label, "%d\xC2\xB0 / %d\xC2\xB0",
-                              (int)(wx.today_hi_c + 0.5f),
-                              (int)(wx.today_lo_c + 0.5f));
+                              (int)(wx.today_hi + 0.5f),
+                              (int)(wx.today_lo + 0.5f));
         lv_label_set_text_fmt(s_precip_label, "rain %d%%", wx.precip_prob_pct);
 
         const int age_min =
@@ -121,7 +123,8 @@ lv_obj_t *page_now_create(void)
 
     s_cond_label = lv_label_create(s_screen);
     lv_obj_set_style_text_font(s_cond_label, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(s_cond_label, lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
+    // White, not grey: the grey read as unlit AMOLED pixels at arm's length.
+    lv_obj_set_style_text_color(s_cond_label, lv_color_white(), 0);
     lv_label_set_text(s_cond_label, "waiting for weather...");
     lv_obj_align(s_cond_label, LV_ALIGN_CENTER, 0, 24);
 

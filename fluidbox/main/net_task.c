@@ -18,6 +18,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "ota.h"
 
 // Wi-Fi credentials live in a gitignored header; the build must still work
 // for a fresh clone, so their absence only disables the network features.
@@ -63,6 +64,9 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ESP_LOGI(TAG, "got IP");
+        // Reaching the network is this firmware's proof of life; a fresh OTA
+        // image that gets here will not be rolled back.
+        ota_mark_healthy();
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
     }
 }
@@ -117,7 +121,7 @@ static esp_err_t wifi_start(void)
     "&current=temperature_2m,weather_code"                                     \
     "&daily=temperature_2m_max,temperature_2m_min"                             \
     "&hourly=precipitation_probability&forecast_hours=2&forecast_days=1"       \
-    "&timezone=auto"
+    "&temperature_unit=fahrenheit&timezone=auto"
 
 static esp_err_t parse_weather(const char *json, weather_model_t *out)
 {
@@ -143,10 +147,10 @@ static esp_err_t parse_weather(const char *json, weather_model_t *out)
 
     if (cJSON_IsNumber(temp) && cJSON_IsNumber(code) && cJSON_IsNumber(hi) &&
         cJSON_IsNumber(lo)) {
-        out->temp_c = (float)temp->valuedouble;
+        out->temp = (float)temp->valuedouble;
         out->weather_code = code->valueint;
-        out->today_hi_c = (float)hi->valuedouble;
-        out->today_lo_c = (float)lo->valuedouble;
+        out->today_hi = (float)hi->valuedouble;
+        out->today_lo = (float)lo->valuedouble;
         out->precip_prob_pct = cJSON_IsNumber(prob) ? prob->valueint : 0;
         out->fetched_us = esp_timer_get_time();
         out->valid = true;
@@ -159,7 +163,7 @@ static esp_err_t parse_weather(const char *json, weather_model_t *out)
 
 static esp_err_t fetch_weather(char *buf)
 {
-    char url[256];
+    char url[384];
     snprintf(url, sizeof(url), WEATHER_URL_FMT, (double)WEATHER_LAT,
              (double)WEATHER_LON);
 
@@ -186,9 +190,9 @@ static esp_err_t fetch_weather(char *buf)
                 xSemaphoreTake(s_model_lock, portMAX_DELAY);
                 s_model = fresh;
                 xSemaphoreGive(s_model_lock);
-                ESP_LOGI(TAG, "weather %.1fC code %d hi %.1f lo %.1f rain %d%%",
-                         (double)fresh.temp_c, fresh.weather_code,
-                         (double)fresh.today_hi_c, (double)fresh.today_lo_c,
+                ESP_LOGI(TAG, "weather %.1fF code %d hi %.1f lo %.1f rain %d%%",
+                         (double)fresh.temp, fresh.weather_code,
+                         (double)fresh.today_hi, (double)fresh.today_lo,
                          fresh.precip_prob_pct);
             }
         } else {
@@ -203,22 +207,36 @@ static esp_err_t fetch_weather(char *buf)
 static void net_task(void *arg)
 {
     char *buf = arg;
+    bool ota_checked_once = false;
+    int64_t last_ota_us = 0;
 
 #if !WEATHER_COORDS_SET
-    // Wi-Fi and SNTP still run (the Now page clock wants them); only the
-    // weather fetch is pointless without real coordinates.
+    // Wi-Fi, SNTP and OTA still run; only the weather fetch is pointless
+    // without real coordinates.
     ESP_LOGW(TAG, "WEATHER_COORDS_SET is 0; not fetching weather");
     (void)buf;
-    vTaskDelay(portMAX_DELAY);
 #endif
 
     for (;;) {
         xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
                             portMAX_DELAY);
+
+        const int64_t now = esp_timer_get_time();
+        if (!ota_checked_once ||
+            now - last_ota_us >= (int64_t)OTA_CHECK_INTERVAL_H * 3600 * 1000000) {
+            ota_checked_once = true;
+            last_ota_us = now;
+            ota_check_and_apply();  // reboots the device if it applies one
+        }
+
+#if WEATHER_COORDS_SET
         const bool ok = fetch_weather(buf) == ESP_OK;
         // A failed fetch retries in a minute; a good one holds the cadence.
         vTaskDelay(pdMS_TO_TICKS(ok ? WEATHER_REFRESH_MIN * 60 * 1000
                                     : FETCH_RETRY_MS));
+#else
+        vTaskDelay(pdMS_TO_TICKS(60 * 60 * 1000));
+#endif
     }
 }
 

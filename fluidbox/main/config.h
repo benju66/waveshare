@@ -341,3 +341,9 @@
 // touch returns to the page that was left, at full brightness.
 #define IDLE_TO_FLUID_MIN 5
 #define IDLE_FLUID_BRIGHTNESS 90
+
+// OTA: pulled from the newest GitHub release when its embedded version
+// differs from the running image. Checked shortly after boot, then daily.
+#define OTA_RELEASE_URL \
+    "https://github.com/benju66/waveshare/releases/latest/download/fluidbox.bin"
+#define OTA_CHECK_INTERVAL_H 24

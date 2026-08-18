@@ -12,10 +12,10 @@
 
 typedef struct {
     bool valid;            // false until the first successful fetch
-    float temp_c;          // current temperature
+    float temp;            // current temperature, Fahrenheit (the API converts)
     int weather_code;      // WMO code, see page_now.c for the glyph mapping
-    float today_hi_c;
-    float today_lo_c;
+    float today_hi;
+    float today_lo;
     int precip_prob_pct;   // probability next hour, 0..100
     int64_t fetched_us;    // esp_timer_get_time() at last success, for staleness
 } weather_model_t;

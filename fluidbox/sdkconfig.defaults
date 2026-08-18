@@ -1,9 +1,12 @@
 CONFIG_IDF_TARGET="esp32s3"
 
-# 16 MB QIO flash, single large app partition (no OTA needed here).
+# 16 MB QIO flash. Two OTA app slots (see partitions.csv); the bootloader
+# rolls back an update that never marks itself healthy.
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Octal PSRAM. The renderer and simulation live in internal SRAM, but keeping
 # PSRAM enabled leaves headroom for future assets.
