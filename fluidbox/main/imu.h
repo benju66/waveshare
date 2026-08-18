@@ -22,3 +22,9 @@ bool imu_read(float dt, sim_forces_t *out);
 // Most recent raw accelerometer reading in m/s^2, for the startup log that
 // confirms the axis mapping.
 void imu_raw_accel(float out[3]);
+
+// Fork addition: reads a fresh accelerometer sample without advancing the
+// gravity/shake filters, for consumers outside the simulation (the lay-flat
+// detector). Only call while the sim task is parked; when the fluid page is
+// active, use imu_raw_accel instead, which the sim keeps fresh.
+bool imu_poll_accel(float out[3]);

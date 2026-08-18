@@ -21,3 +21,42 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# --- Widget pages fork ---
+
+# LVGL allocates through ui_lvgl_mem.c into PSRAM: its default 64 KB builtin
+# pool lives in static DRAM, which the particle arrays already fill to the
+# brim (the link overflows without this).
+CONFIG_LV_USE_CUSTOM_MALLOC=y
+
+# LVGL fonts beyond the default 14pt: the pomodoro's big countdown digits.
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# Keep Wi-Fi and lwIP work off core 0, where the render and LVGL tasks live,
+# so a weather fetch cannot dent the fluid frame rate.
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
+
+# Static DRAM is the scarcest resource here (the fluid fills it by design)
+# and the Wi-Fi stack's globals barely fit. Shed the parts of it this device
+# never uses: it is a Wi-Fi client on a home network, full stop.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+CONFIG_LWIP_IPV6=n
+
+# Internal heap runs ~9 KB free once Wi-Fi is up, and a TLS handshake wants
+# ~40 KB. Route mbedTLS and the Wi-Fi/lwIP buffer pools to PSRAM; the
+# handshake happens at most every weather refresh, so its speed is
+# irrelevant.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# The driver's default 16 static RX buffers (DMA, internal RAM only) do not
+# fit next to the fluid, and this device fetches ~500 bytes of JSON every 15
+# minutes - throughput tuning is meaningless here. 6 is the documented
+# minimum for reliable operation with a BA window of 4.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_RX_BA_WIN=4
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16

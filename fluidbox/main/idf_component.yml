@@ -8,3 +8,6 @@ dependencies:
   waveshare/qmi8658:
     version: "^2.0.0"
     public: true
+  lvgl/lvgl:
+    version: "^9.2.0"
+    public: true

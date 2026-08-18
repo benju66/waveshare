@@ -40,6 +40,11 @@ static esp_lcd_panel_io_handle_t s_io;
 static SemaphoreHandle_t s_buffers_free;
 static bool s_is_v2;
 
+// Forwarded from the transfer-complete interrupt while an LVGL page owns the
+// panel; NULL the rest of the time. Only mutated while the DMA is idle.
+static volatile display_trans_done_hook_t s_trans_hook;
+static void *volatile s_trans_hook_ctx;
+
 // Same power-on sequence Waveshare uses: pixel format RGB565, brightness and
 // HBM registers open, full-window address set, sleep out, display on.
 static const co5300_lcd_init_cmd_t s_init_cmds[] = {
@@ -66,6 +71,11 @@ static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t io,
 
     BaseType_t higher_priority_woken = pdFALSE;
     xSemaphoreGiveFromISR(s_buffers_free, &higher_priority_woken);
+
+    const display_trans_done_hook_t hook = s_trans_hook;
+    if (hook != NULL) {
+        hook(s_trans_hook_ctx);
+    }
     return higher_priority_woken == pdTRUE;
 }
 
@@ -152,4 +162,42 @@ esp_err_t display_flush_band(int band_index, const uint16_t *buffer)
 esp_err_t display_set_brightness(uint8_t level)
 {
     return esp_lcd_panel_io_tx_param(s_io, LCD_CMD_BRIGHTNESS, &level, 1);
+}
+
+void display_set_trans_done_hook(display_trans_done_hook_t hook, void *ctx)
+{
+    s_trans_hook_ctx = ctx;
+    s_trans_hook = hook;
+}
+
+esp_err_t display_flush_area(int x0, int y0, int x1_excl, int y1_excl, const void *buffer)
+{
+    xSemaphoreTake(s_buffers_free, portMAX_DELAY);
+
+    const esp_err_t err =
+        esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1_excl, y1_excl, buffer);
+    if (err != ESP_OK) {
+        // The transfer never started, so the interrupt will never give this
+        // slot back; return it here or the count is wrong forever.
+        xSemaphoreGive(s_buffers_free);
+    }
+    return err;
+}
+
+void display_wait_idle(void)
+{
+    xSemaphoreTake(s_buffers_free, portMAX_DELAY);
+    xSemaphoreTake(s_buffers_free, portMAX_DELAY);
+    xSemaphoreGive(s_buffers_free);
+    xSemaphoreGive(s_buffers_free);
+}
+
+uint16_t *display_band_buffer(int idx)
+{
+    return s_band_buf[idx & 1];
+}
+
+esp_err_t display_power(bool on)
+{
+    return esp_lcd_panel_disp_on_off(s_panel, on);
 }

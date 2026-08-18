@@ -21,3 +21,9 @@ vendor/
 # Host preview: rendered frames, and the copy of render.c it builds from
 tools/preview/out/
 tools/preview/render_host.c
+
+# Local tooling config
+.claude/
+
+# Wi-Fi credentials (a secrets.h.example is committed instead)
+fluidbox/main/secrets.h

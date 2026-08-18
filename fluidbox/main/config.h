@@ -13,7 +13,10 @@
 // The renderer never holds a whole frame. It draws one horizontal band at a
 // time into internal SRAM and DMAs it out while drawing the next one, which
 // keeps the framebuffer off PSRAM entirely.
-#define BAND_ROWS 28
+// Fork note: 14 rows rather than upstream's 28. Two smaller band buffers
+// free ~21 KB of DMA-capable DRAM for Wi-Fi at the cost of 16 extra (cheap,
+// DMA-overlapped) transfers per frame. Must divide LCD_V_RES.
+#define BAND_ROWS 14
 #define BAND_COUNT (LCD_V_RES / BAND_ROWS)
 
 #define DISPLAY_BRIGHTNESS 230  // 0..255, written to panel register 0x51
@@ -70,7 +73,10 @@
 // actually matters is TIME_SCALE divided by the step rate: measured at 900
 // particles, 0.085 settled to 65 px/s and 0.115 only reached 140. This is the
 // compromise, and it is the first thing to lower if the surface looks noisy.
-#define TIME_SCALE 0.100f
+// Fork note: upstream shipped 0.100 and measured 0.085 settling to 65 px/s
+// where 0.115 only reached 140 (see below). At 0.100 the pool never quite
+// went still when held upright, so this fork takes the measured-calm value.
+#define TIME_SCALE 0.085f
 
 // Ceiling on the physics timestep, in scaled seconds per substep.
 //
@@ -121,8 +127,12 @@
 // 1200 overflows the static DRAM segment at link time. COUNT is capped by
 // speed: 1200 particles ran at 23 steps/s while being shaken, 900 holds
 // around 30, and the extra smoothness reads better than the extra density.
-#define PARTICLE_MAX 1000
-#define PARTICLE_COUNT 900
+// Fork note: trimmed from upstream's 1000/900 to fit the Wi-Fi stack's ~50 KB
+// of internal-RAM globals alongside the fluid. Density reads nearly the same
+// at 800 and the step rate rises a little; the README's own guidance is that
+// COUNT is the first knob to turn.
+#define PARTICLE_MAX 800
+#define PARTICLE_COUNT 800
 
 // Distance between neighbouring particles when the fluid is at rest.
 #define REST_SPACING 17.0f
@@ -208,7 +218,9 @@
 #define GRAVITY_LP_HZ 1.2f
 
 // How hard a shake pushes the fluid, relative to the true pseudo-force.
-#define SHAKE_GAIN 1.6f
+// Fork note: upstream 1.6 read as subtle; raised so shaking the case
+// visibly throws the fluid.
+#define SHAKE_GAIN 2.4f
 
 // Rotating-frame forces from the gyro: centrifugal, Euler (angular
 // acceleration) and Coriolis. Set to 0 to disable them.
@@ -277,3 +289,55 @@
 // 1 - DEPTH_DIM_MIN. At 0.60 the back of the box is dimmed by 40%, half as much
 // as the 80% it started at.
 #define DEPTH_DIM_MIN 0.60f
+
+// ---------------------------------------------------------------------------
+// Widget pages (fork additions)
+// ---------------------------------------------------------------------------
+
+// CST820 interrupt line. The touch controller shares the IMU/PMU I2C bus.
+#define TOUCH_INT_GPIO 21
+
+// A page-change swipe must travel this far horizontally, stray no further
+// than this vertically, and complete within this long of first contact.
+#define SWIPE_MIN_DX 80
+#define SWIPE_MAX_DY 60
+#define SWIPE_MAX_MS 400
+
+// Sideways travel beyond which LVGL is told the finger lifted, so a swipe
+// never doubles as a press on whatever widget it started on.
+#define SWIPE_LV_CANCEL_DX 30
+
+// Pomodoro. Standard cycle; every POMO_SESSIONS_PER_CYCLE-th work session
+// ends in the long break. POMO_WORK_MIN is only the boot default: a vertical
+// swipe on the idle timer page adjusts the work duration at runtime.
+#define POMO_WORK_MIN 25
+#define POMO_SHORT_BREAK_MIN 5
+#define POMO_LONG_BREAK_MIN 15
+#define POMO_SESSIONS_PER_CYCLE 4
+#define POMO_ADJUST_STEP_MIN 5
+#define POMO_WORK_MIN_FLOOR 5
+#define POMO_WORK_MIN_CEIL 60
+
+// Vertical swipe on the timer page = duration adjust.
+#define SWIPE_MIN_DY 60
+
+// Laying the device face down pauses a running session; picking it back up
+// resumes. Face-down means the raw accelerometer z axis reads near +g for
+// this long ("flat, screen up" reads -g; see the axis notes above).
+#define FACE_DOWN_MPS2 8.0f
+#define FACE_DOWN_HOLD_MS 800
+
+// Weather for the Now page, from Open-Meteo (no API key). Home coordinates
+// and US Central time, per Ben.
+#define WEATHER_COORDS_SET 1
+#define WEATHER_LAT 45.1942f
+#define WEATHER_LON -93.6735f
+#define WEATHER_REFRESH_MIN 15
+#define WEATHER_STALE_MIN 30
+#define TZ_STRING "CST6CDT,M3.2.0,M11.1.0"
+
+// AMOLED care: after this long without touch on an LVGL page, auto-switch to
+// the fluid at reduced brightness. Moving pixels are the screensaver; any
+// touch returns to the page that was left, at full brightness.
+#define IDLE_TO_FLUID_MIN 5
+#define IDLE_FLUID_BRIGHTNESS 90

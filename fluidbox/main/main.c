@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 
+#include "battery.h"
 #include "button.h"
 #include "config.h"
 #include "display.h"
@@ -18,8 +19,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "imu.h"
+#include "net_task.h"
+#include "page_manager.h"
 #include "render.h"
 #include "sim.h"
+#include "touch_cst820.h"
+#include "ui_lvgl.h"
 
 #define I2C_PORT I2C_NUM_0
 #define I2C_SDA GPIO_NUM_15
@@ -28,7 +33,6 @@
 // The simulation runs as fast as it can and yields a single tick each pass, so
 // the idle task on its core still gets scheduled and the watchdog stays fed.
 #define SIM_YIELD_TICKS 1
-#define BUTTON_PERIOD_MS 25
 #define STATS_PERIOD_MS 2000
 
 static const char *TAG = "fluidbox";
@@ -58,6 +62,9 @@ static void render_task(void *arg)
     (void)arg;
 
     for (;;) {
+        // Sleeps here while an LVGL page owns the panel.
+        page_manager_render_gate();
+
         render_frame();
         s_frames++;
 
@@ -79,9 +86,12 @@ static void sim_task(void *arg)
     };
 
     int64_t last_us = esp_timer_get_time();
-    int64_t last_button_us = last_us;
 
     for (;;) {
+        // Sleeps here while an LVGL page owns the panel, so the fluid wakes
+        // with current IMU gravity instead of simulating unseen.
+        page_manager_sim_gate();
+
         const int64_t now = esp_timer_get_time();
         float dt = (float)(now - last_us) * 1e-6f;
         last_us = now;
@@ -98,13 +108,9 @@ static void sim_task(void *arg)
         sim_step(dt, &forces);
         s_steps++;
 
-        if (now - last_button_us >= BUTTON_PERIOD_MS * 1000) {
-            last_button_us = now;
-            if (button_take_short_press()) {
-                ESP_LOGI(TAG, "PWR pressed, resetting fluid");
-                sim_reset();
-            }
-        }
+        // The PWR button moved to the touch task (it now sleeps the screen
+        // rather than reseeding the fluid), which also keeps it responsive
+        // while this task is parked.
 
         vTaskDelay(SIM_YIELD_TICKS);
     }
@@ -176,12 +182,29 @@ void app_main(void)
     if (button_init(s_i2c_bus) != ESP_OK) {
         ESP_LOGW(TAG, "continuing without the reset button");
     }
+    if (battery_init(s_i2c_bus) != ESP_OK) {
+        ESP_LOGW(TAG, "continuing without a battery gauge");
+    }
 
     sim_init();
     render_init();
 
-    xTaskCreatePinnedToCore(sim_task, "sim", 4096, NULL, 5, NULL, 1);
-    xTaskCreatePinnedToCore(render_task, "render", 4096, NULL, 5, NULL, 0);
+    // Page machinery before the renderer tasks exist: their loop gates read
+    // page manager state from the first iteration.
+    ESP_ERROR_CHECK(page_manager_init());
+    ESP_ERROR_CHECK(ui_lvgl_init());
+    if (touch_init(s_i2c_bus) != ESP_OK) {
+        ESP_LOGW(TAG, "continuing without touch; pages unreachable by swipe");
+    }
+    if (net_task_start() != ESP_OK) {
+        ESP_LOGW(TAG, "continuing offline; Now page will have no weather");
+    }
+
+    TaskHandle_t sim_handle = NULL;
+    TaskHandle_t render_handle = NULL;
+    xTaskCreatePinnedToCore(sim_task, "sim", 4096, NULL, 5, &sim_handle, 1);
+    xTaskCreatePinnedToCore(render_task, "render", 4096, NULL, 5, &render_handle, 0);
+    page_manager_register_tasks(render_handle, sim_handle, ui_lvgl_task_handle());
 
     stats_loop();
 }

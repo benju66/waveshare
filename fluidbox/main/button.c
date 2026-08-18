@@ -110,3 +110,8 @@ bool button_take_short_press(void)
     }
     return false;
 }
+
+bool button_is_pressed(void)
+{
+    return s_stable_state;
+}

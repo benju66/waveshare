@@ -15,3 +15,7 @@ esp_err_t button_init(i2c_master_bus_handle_t bus);
 
 // Call periodically. Returns true exactly once per completed short press.
 bool button_take_short_press(void);
+
+// True while the debounced PWR line currently reads pressed. Updated by the
+// same polling as button_take_short_press, so call that first each cycle.
+bool button_is_pressed(void);

@@ -102,6 +102,21 @@ void imu_raw_accel(float out[3])
     memcpy(out, s_raw_accel, sizeof(s_raw_accel));
 }
 
+bool imu_poll_accel(float out[3])
+{
+    if (!s_ready) {
+        return false;
+    }
+    qmi8658_data_t data;
+    if (qmi8658_read_sensor_data(&s_dev, &data) != ESP_OK) {
+        return false;
+    }
+    out[0] = data.accelX;
+    out[1] = data.accelY;
+    out[2] = data.accelZ;
+    return true;
+}
+
 bool imu_read(float dt, sim_forces_t *out)
 {
     if (!s_ready) {
