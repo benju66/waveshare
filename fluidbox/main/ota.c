@@ -28,10 +28,11 @@ esp_err_t ota_check_and_apply(void)
         .url = OTA_RELEASE_URL,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 20000,
-        // GitHub's release redirect points at a signed CDN URL several
-        // hundred characters long; the default 512 byte buffers truncate it.
-        .buffer_size = 2048,
-        .buffer_size_tx = 2048,
+        // GitHub's release redirect points at a signed CDN URL that can run
+        // past 2 KB; a transmit buffer that cannot hold the whole rewritten
+        // request gets the connection dropped mid-headers (observed).
+        .buffer_size = 4096,
+        .buffer_size_tx = 4096,
     };
     const esp_https_ota_config_t cfg = {
         .http_config = &http,
