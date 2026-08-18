@@ -224,9 +224,20 @@ static void net_task(void *arg)
         const int64_t now = esp_timer_get_time();
         if (!ota_checked_once ||
             now - last_ota_us >= (int64_t)OTA_CHECK_INTERVAL_H * 3600 * 1000000) {
-            ota_checked_once = true;
             last_ota_us = now;
-            ota_check_and_apply();  // reboots the device if it applies one
+            // Outrank the sim for the duration: the TLS handshake is pure
+            // math and starves at this task's usual priority. The fluid
+            // freezes for the few seconds of an update check; fair trade.
+            vTaskPrioritySet(NULL, 6);
+            esp_err_t err = ESP_FAIL;
+            for (int attempt = 0; attempt < 3 && err != ESP_OK; attempt++) {
+                if (attempt > 0) {
+                    vTaskDelay(pdMS_TO_TICKS(30 * 1000));
+                }
+                err = ota_check_and_apply();  // reboots if it applies one
+            }
+            vTaskPrioritySet(NULL, 3);
+            ota_checked_once = true;
         }
 
 #if WEATHER_COORDS_SET

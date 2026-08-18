@@ -27,7 +27,9 @@ esp_err_t ota_check_and_apply(void)
     esp_http_client_config_t http = {
         .url = OTA_RELEASE_URL,
         .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 20000,
+        // TLS handshakes compute from PSRAM here and share a core with the
+        // sim; two hops (github.com, then the CDN) need generous patience.
+        .timeout_ms = 40000,
         // GitHub's release redirect points at a signed CDN URL that can run
         // past 2 KB; a transmit buffer that cannot hold the whole rewritten
         // request gets the connection dropped mid-headers (observed).

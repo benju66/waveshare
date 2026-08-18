@@ -63,3 +63,7 @@ CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_RX_BA_WIN=4
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+
+# TLS handshakes (PSRAM-resident mbedTLS sharing a core with the sim) can
+# legitimately monopolize CPU1 for stretches; don't page the watchdog over it.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
