@@ -12,6 +12,7 @@
 #define AXP2101_REG_BATT_PERCENT 0xA4
 #define AXP2101_REG_PMU_STATUS1 0x00
 #define PMU_STATUS1_BATT_PRESENT (1 << 3)
+#define PMU_STATUS1_VBUS_GOOD (1 << 5)  // verify on hardware: unplug USB on battery
 
 #define CACHE_US (10 * 1000000LL)
 
@@ -39,6 +40,18 @@ esp_err_t battery_init(i2c_master_bus_handle_t bus)
 static esp_err_t read_reg(uint8_t reg, uint8_t *value)
 {
     return i2c_master_transmit_receive(s_dev, &reg, 1, value, 1, 50);
+}
+
+bool battery_on_usb(void)
+{
+    if (s_dev == NULL) {
+        return true;
+    }
+    uint8_t status = 0;
+    if (read_reg(AXP2101_REG_PMU_STATUS1, &status) != ESP_OK) {
+        return true;
+    }
+    return (status & PMU_STATUS1_VBUS_GOOD) != 0;
 }
 
 int battery_percent(void)

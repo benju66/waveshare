@@ -296,6 +296,27 @@ esp_err_t net_task_start(void)
 #endif
 }
 
+void net_set_enabled(bool enabled)
+{
+#if HAVE_SECRETS
+    static bool s_enabled = true;
+    if (s_wifi_events == NULL || enabled == s_enabled) {
+        return;  // never started, or nothing to change
+    }
+    s_enabled = enabled;
+    if (enabled) {
+        ESP_LOGI(TAG, "radio on");
+        esp_wifi_start();
+    } else {
+        ESP_LOGI(TAG, "radio off");
+        xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
+        esp_wifi_stop();
+    }
+#else
+    (void)enabled;
+#endif
+}
+
 bool weather_get(weather_model_t *out)
 {
     if (s_model_lock == NULL) {

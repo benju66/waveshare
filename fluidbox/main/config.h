@@ -327,6 +327,17 @@
 #define FACE_DOWN_MPS2 8.0f
 #define FACE_DOWN_HOLD_MS 800
 
+// Pocket guard: a touch may wake the dark screen only if the device has
+// been motionless this long (consecutive accel samples within the delta).
+// A desk tap always passes; jostling pocket fabric never does. The PWR
+// button wakes regardless.
+#define STATIONARY_DELTA_MPS2 1.2f
+#define STATIONARY_HOLD_MS 2000
+
+// Touch/button poll cadence while the screen is off: 10x slower. Tap wake
+// still lands within a fifth of a second, and the I2C bus mostly sleeps.
+#define TOUCH_POLL_OFF_MS 200
+
 // Weather for the Now page, from Open-Meteo (no API key). Home coordinates
 // and US Central time, per Ben.
 #define WEATHER_COORDS_SET 1

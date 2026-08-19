@@ -3,12 +3,14 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "battery.h"
 #include "config.h"
 #include "display.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "net_task.h"
 #include "ui_lvgl.h"
 
 #define PAGE_EVT_QUEUE_LEN 4
@@ -191,6 +193,9 @@ static void screen_off(void)
     park_current(current);
     clear_panel_black();
     display_power(false);
+    // Screen off means pocket or night: the radio is the biggest remaining
+    // drain, and weather can be half an hour stale without anyone noticing.
+    net_set_enabled(false);
     atomic_store(&s_screen_off, true);
     ESP_LOGI(TAG, "screen off (was page %d)", current);
 }
@@ -202,6 +207,7 @@ static void screen_wake(page_id_t target)
     }
     display_power(true);
     display_set_brightness(DISPLAY_BRIGHTNESS);
+    net_set_enabled(true);
     atomic_store(&s_idle_dimmed, false);
     start_page(target);
     atomic_store(&s_current, target);
@@ -220,10 +226,17 @@ static void idle_check(void)
     }
     const int64_t idle_us = esp_timer_get_time() - atomic_load(&s_last_touch_us);
     if (idle_us > (int64_t)IDLE_TO_FLUID_MIN * 60 * 1000000) {
-        ESP_LOGI(TAG, "idle %d min, dimming to the fluid", IDLE_TO_FLUID_MIN);
-        goto_page(PAGE_FLUID);
-        display_set_brightness(IDLE_FLUID_BRIGHTNESS);
-        atomic_store(&s_idle_dimmed, true);
+        if (battery_on_usb()) {
+            // Desk: the dimmed fluid is the screensaver.
+            ESP_LOGI(TAG, "idle %d min, dimming to the fluid", IDLE_TO_FLUID_MIN);
+            goto_page(PAGE_FLUID);
+            display_set_brightness(IDLE_FLUID_BRIGHTNESS);
+            atomic_store(&s_idle_dimmed, true);
+        } else {
+            // Battery: every idle minute of screensaver is carry time lost.
+            ESP_LOGI(TAG, "idle %d min on battery, screen off", IDLE_TO_FLUID_MIN);
+            screen_off();
+        }
     }
 }
 

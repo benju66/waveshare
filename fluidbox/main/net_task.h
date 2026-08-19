@@ -27,3 +27,9 @@ esp_err_t net_task_start(void);
 
 // Copies the latest model. Returns model.valid.
 bool weather_get(weather_model_t *out);
+
+// Radio on/off, for the screen-off power state. Off tears the STA down
+// entirely (the largest controllable drain after the panel); on restarts it
+// and the existing handlers reconnect within a few seconds. No-ops when
+// Wi-Fi never started (no secrets.h).
+void net_set_enabled(bool enabled);

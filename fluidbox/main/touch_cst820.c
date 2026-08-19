@@ -1,6 +1,7 @@
 #include "touch_cst820.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "button.h"
 #include "config.h"
@@ -60,6 +61,10 @@ static bool s_swipe_fired;
 static bool s_lv_suppressed;
 static bool s_lv_published;  // LVGL has seen this contact as a live press
 
+// True while the device has been motionless for STATIONARY_HOLD_MS: the
+// desk-vs-pocket discriminator for touch wake. Updated by poll_imu.
+static bool s_stationary;
+
 static void IRAM_ATTR touch_isr(void *arg)
 {
     (void)arg;
@@ -102,11 +107,19 @@ static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
             s_y0 = y;
             s_t0_us = now;
             s_lv_published = false;
-            // A press that wakes the idle-dimmed screen is consumed by the
-            // wake: it must not also click whatever the page shows, nor turn
-            // into a page swipe on top of the wake transition.
-            s_lv_suppressed = page_manager_wake_touch();
-            s_swipe_fired = s_lv_suppressed;
+            if (page_manager_screen_is_off() && !s_stationary) {
+                // Pocket guard: the screen is dark and the device is being
+                // jostled - this "touch" is fabric. Swallow the whole
+                // contact; only the PWR button wakes a moving device.
+                s_lv_suppressed = true;
+                s_swipe_fired = true;
+            } else {
+                // A press that wakes the dimmed or dark screen is consumed
+                // by the wake: it must not also click whatever the page
+                // shows, nor turn into a page swipe on the transition.
+                s_lv_suppressed = page_manager_wake_touch();
+                s_swipe_fired = s_lv_suppressed;
+            }
         }
 
         const int dx = x - s_x0;
@@ -175,14 +188,17 @@ static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
     }
 }
 
-// Face-down detection for flip-to-pause. On the fluid page the sim keeps the
-// cached sample fresh; everywhere else the sim task is parked, so a direct
-// poll is safe. Debounced so a wobble while handling never pauses anything.
-static void poll_face_down(void)
+// IMU housekeeping: flip-to-pause detection plus the stationary tracker.
+// On the fluid page the sim keeps the cached sample fresh; everywhere else
+// the sim task is parked, so a direct poll is safe. Debounced so a wobble
+// while handling never pauses anything.
+static void poll_imu(void)
 {
     static int64_t s_last_poll_us;
     static int64_t s_flat_since_us;
     static bool s_reported;
+    static float s_prev[3];
+    static int64_t s_still_since_us;
 
     const int64_t now = esp_timer_get_time();
     if (now - s_last_poll_us < 250 * 1000) {
@@ -195,6 +211,23 @@ static void poll_face_down(void)
         imu_raw_accel(accel);
     } else if (!imu_poll_accel(accel)) {
         return;
+    }
+
+    // Stationary tracking: compare against the previous sample rather than
+    // absolute gravity, so any resting orientation counts as still.
+    const float dx = accel[0] - s_prev[0];
+    const float dy = accel[1] - s_prev[1];
+    const float dz = accel[2] - s_prev[2];
+    memcpy(s_prev, accel, sizeof(s_prev));
+    if (dx * dx + dy * dy + dz * dz >
+        STATIONARY_DELTA_MPS2 * STATIONARY_DELTA_MPS2) {
+        s_still_since_us = 0;
+        s_stationary = false;
+    } else {
+        if (s_still_since_us == 0) {
+            s_still_since_us = now;
+        }
+        s_stationary = now - s_still_since_us >= (int64_t)STATIONARY_HOLD_MS * 1000;
     }
 
     // "Flat, screen up" reads about -g on the raw z axis (see config.h), so
@@ -258,10 +291,14 @@ static void touch_task(void *arg)
     (void)arg;
 
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TOUCH_POLL_MS));
+        // The dark screen needs neither 50 Hz touch tracking nor a hot I2C
+        // bus; the INT line still short-circuits the slow poll on a real tap.
+        const uint32_t poll_ms =
+            page_manager_screen_is_off() ? TOUCH_POLL_OFF_MS : TOUCH_POLL_MS;
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(poll_ms));
 
         poll_power_button();
-        poll_face_down();
+        poll_imu();
 
         // Read unconditionally. Bring-up showed the CST820's INT line cannot
         // be relied on (the IrqCtl write appears to be ignored on this chip),
