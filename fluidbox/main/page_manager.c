@@ -11,6 +11,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "net_task.h"
+#include "page_pomodoro.h"
 #include "settings.h"
 #include "ui_lvgl.h"
 
@@ -222,22 +223,32 @@ static void screen_wake(page_id_t target)
 
 static void idle_check(void)
 {
-    if (atomic_load(&s_screen_off) || page_manager_current() == PAGE_FLUID) {
+    if (atomic_load(&s_screen_off) || atomic_load(&s_idle_dimmed) ||
+        page_manager_current() == PAGE_FLUID) {
         return;
     }
     const int idle_min = settings_idle_min();
     const int64_t idle_us = esp_timer_get_time() - atomic_load(&s_last_touch_us);
     if (idle_us > (int64_t)idle_min * 60 * 1000000) {
-        if (battery_on_usb()) {
-            // Desk: the dimmed fluid is the screensaver.
+        if (!battery_on_usb()) {
+            // Battery: every idle minute of screen is carry time lost. A
+            // running session still alerts at full brightness when it ends.
+            ESP_LOGI(TAG, "idle %d min on battery, screen off", idle_min);
+            screen_off();
+        } else if (page_pomodoro_session_running()) {
+            // Desk with a session counting: the timer owns the idle screen,
+            // dimmed but readable - never the fluid, whatever page was open.
+            ESP_LOGI(TAG, "idle %d min with a session running, dimmed timer",
+                     idle_min);
+            goto_page(PAGE_TIMER);
+            display_set_brightness(IDLE_FLUID_BRIGHTNESS);
+            atomic_store(&s_idle_dimmed, true);
+        } else {
+            // Desk, nothing running: the dimmed fluid is the screensaver.
             ESP_LOGI(TAG, "idle %d min, dimming to the fluid", idle_min);
             goto_page(PAGE_FLUID);
             display_set_brightness(IDLE_FLUID_BRIGHTNESS);
             atomic_store(&s_idle_dimmed, true);
-        } else {
-            // Battery: every idle minute of screensaver is carry time lost.
-            ESP_LOGI(TAG, "idle %d min on battery, screen off", idle_min);
-            screen_off();
         }
     }
 }
@@ -267,17 +278,26 @@ static void page_manager_task(void *arg)
         case PAGE_EVT_WAKE:
             if (atomic_load(&s_screen_off)) {
                 screen_wake(s_page_before_off);
+            } else if ((page_id_t)atomic_load(&s_last_lvgl_page) == current) {
+                // Dimmed in place (running timer): just restore brightness.
+                if (atomic_exchange(&s_idle_dimmed, false)) {
+                    display_set_brightness(settings_brightness());
+                }
+                atomic_store(&s_last_touch_us, esp_timer_get_time());
             } else {
                 // Waking from the idle dim: back to the page that was left.
                 goto_page((page_id_t)atomic_load(&s_last_lvgl_page));
             }
             break;
         case PAGE_EVT_ALERT_TIMER:
-            // A finished pomodoro phase deserves eyes on it, whatever the
-            // screen was doing.
+            // A finished pomodoro phase deserves eyes on it, at full
+            // brightness, whatever the screen was doing.
             if (atomic_load(&s_screen_off)) {
                 screen_wake(PAGE_TIMER);
             } else {
+                if (atomic_exchange(&s_idle_dimmed, false)) {
+                    display_set_brightness(settings_brightness());
+                }
                 goto_page(PAGE_TIMER);
             }
             break;

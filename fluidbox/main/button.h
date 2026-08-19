@@ -19,3 +19,8 @@ bool button_take_short_press(void);
 // True while the debounced PWR line currently reads pressed. Updated by the
 // same polling as button_take_short_press, so call that first each cycle.
 bool button_is_pressed(void);
+
+// The most recent raw sample, no debounce. For actions that must fire on
+// the first sample of a press: at slow poll rates the two-sample debounce
+// eats any press shorter than two periods.
+bool button_raw_pressed(void);

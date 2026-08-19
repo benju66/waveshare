@@ -115,3 +115,8 @@ bool button_is_pressed(void)
 {
     return s_stable_state;
 }
+
+bool button_raw_pressed(void)
+{
+    return (s_last_raw & PWR_BIT) != 0;
+}

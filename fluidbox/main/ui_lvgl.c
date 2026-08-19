@@ -54,6 +54,20 @@ static uint32_t tick_cb(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+// The CO5300 corrupts columns when a window update starts on an odd
+// coordinate (classic for this panel family). The fluid never trips it -
+// full-width bands - but LVGL's small partial invalidations (a label here,
+// a badge there) land anywhere, which showed up as jagged, garbled text.
+// Round every invalidated area outward to even boundaries.
+static void invalidate_cb(lv_event_t *e)
+{
+    lv_area_t *area = lv_event_get_param(e);
+    area->x1 &= ~1;
+    area->y1 &= ~1;
+    area->x2 |= 1;
+    area->y2 |= 1;
+}
+
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
     // The panel takes byte-swapped RGB565 (see SWAP16 in render.c). Swapping
@@ -178,6 +192,7 @@ esp_err_t ui_lvgl_init(void)
     lv_display_set_buffers(s_disp, display_band_buffer(0), display_band_buffer(1),
                            UI_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(s_disp, flush_cb);
+    lv_display_add_event_cb(s_disp, invalidate_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
     s_indev = lv_indev_create();
     lv_indev_set_type(s_indev, LV_INDEV_TYPE_POINTER);

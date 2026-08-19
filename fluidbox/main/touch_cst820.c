@@ -257,8 +257,8 @@ static void poll_imu(void)
 static void poll_power_button(void)
 {
     static int64_t s_last_poll_us;
+    static int64_t s_last_action_us;
     static bool s_was_pressed;
-    static bool s_ignore_release;
 
     const int64_t now = esp_timer_get_time();
     if (now - s_last_poll_us < (int64_t)BUTTON_POLL_MS * 1000) {
@@ -266,27 +266,24 @@ static void poll_power_button(void)
     }
     s_last_poll_us = now;
 
-    const bool short_press = button_take_short_press();  // also runs the debouncer
-    const bool pressed = button_is_pressed();
+    // Run the debouncer for its bookkeeping, but act on the RAW press edge:
+    // at the dark screen's slow poll rate, the two-sample debounce eats any
+    // press shorter than two periods, which is most presses (observed as
+    // "the button only works if I hold it"). The consumed short-press result
+    // is deliberately discarded.
+    (void)button_take_short_press();
+    const bool pressed = button_raw_pressed();
     const bool press_edge = pressed && !s_was_pressed;
-    const bool release_edge = !pressed && s_was_pressed;
     s_was_pressed = pressed;
 
-    // Waking must happen on the press EDGE, not on a classified short press:
-    // people hold the button when a screen stays dark, a hold never becomes
-    // a short press, and at 6 seconds the AXP2101 hard-cuts the power.
-    if (press_edge && page_manager_screen_is_off()) {
-        page_manager_post_event(PAGE_EVT_WAKE);
-        s_ignore_release = true;  // this press's release already did its job
-    }
-
-    // Short press with the screen on: panel off. The 6 second hardware
-    // power-off stays available underneath all of this.
-    if (short_press && !s_ignore_release && !page_manager_screen_is_off()) {
-        page_manager_post_event(PAGE_EVT_SCREEN_OFF);
-    }
-    if (release_edge) {
-        s_ignore_release = false;
+    // Toggle on the press edge - screen off if on, wake if off - with a
+    // cooldown so contact bounce or a flustered double-press cannot flip
+    // the state right back. The 6 second AXP2101 hardware power-off remains
+    // underneath all of this.
+    if (press_edge && now - s_last_action_us > 500 * 1000) {
+        s_last_action_us = now;
+        page_manager_post_event(page_manager_screen_is_off() ? PAGE_EVT_WAKE
+                                                             : PAGE_EVT_SCREEN_OFF);
     }
 }
 

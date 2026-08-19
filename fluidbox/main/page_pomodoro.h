@@ -24,6 +24,10 @@ bool page_pomodoro_badge_text(char *buf, size_t len);
 // session is active. Safe from the touch task.
 void page_pomodoro_adjust(int delta_min);
 
+// True while a session is actively counting down (not idle, not paused).
+// The idle policy dims the timer page in place instead of leaving it.
+bool page_pomodoro_session_running(void);
+
 // Lay-flat detector feed. Face-down pauses a running session; coming back up
 // resumes it, unless the user toggled the timer while it lay there.
 void page_pomodoro_set_face_down(bool face_down);

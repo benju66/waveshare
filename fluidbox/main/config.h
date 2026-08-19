@@ -334,9 +334,10 @@
 #define STATIONARY_DELTA_MPS2 1.2f
 #define STATIONARY_HOLD_MS 2000
 
-// Touch/button poll cadence while the screen is off: 10x slower. Tap wake
-// still lands within a fifth of a second, and the I2C bus mostly sleeps.
-#define TOUCH_POLL_OFF_MS 200
+// Touch/button poll cadence while the screen is off (also the light-sleep
+// wake interval on battery). 100 ms is the compromise between pocket drain
+// and catching a normal-length button press on its first raw sample.
+#define TOUCH_POLL_OFF_MS 100
 
 // Weather for the Now page, from Open-Meteo (no API key). Home coordinates
 // and US Central time, per Ben.

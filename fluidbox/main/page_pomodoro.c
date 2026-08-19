@@ -239,12 +239,28 @@ static lv_color_t phase_color(pomo_phase_t phase, bool running)
 // lv_anim position tweens; each dot fades and deletes itself.
 // ---------------------------------------------------------------------------
 
-#define FW_WAVES 3
-#define FW_DOTS_PER_WAVE 14
-#define FW_MS 1300
-#define FW_WAVE_GAP_MS 260
-#define FW_RADIUS_MIN 80
-#define FW_RADIUS_MAX 185
+// Pixel-art fireworks show: rockets launch from the bottom edge, climb, and
+// burst into colored square sparks. Loops until the user taps (which also
+// starts the next phase, so acknowledging the timer ends the show).
+
+#define FW_LAUNCH_MS 700     // director cadence: one rocket per tick
+#define FW_ROCKET_MS 600
+#define FW_BURST_SPARKS 22
+#define FW_BURST_MS 1200
+#define FW_BURST_R_MIN 100
+#define FW_BURST_R_MAX 240
+
+static lv_timer_t *s_show_timer;
+static atomic_bool s_show_active;
+
+// Everything the show draws lives on this transparent full-screen layer, so
+// stopping the show is one clean(): no sparks linger after the closing tap.
+static lv_obj_t *s_fw_layer;
+
+static const lv_palette_t s_fw_colors[] = {LV_PALETTE_RED, LV_PALETTE_AMBER,
+                                           LV_PALETTE_GREEN, LV_PALETTE_LIGHT_BLUE,
+                                           LV_PALETTE_PURPLE, LV_PALETTE_PINK,
+                                           LV_PALETTE_YELLOW};
 
 static void fw_set_x(void *obj, int32_t v) { lv_obj_set_x(obj, v); }
 static void fw_set_y(void *obj, int32_t v) { lv_obj_set_y(obj, v); }
@@ -254,66 +270,121 @@ static void fw_done(lv_anim_t *a)
     lv_obj_delete((lv_obj_t *)a->var);
 }
 
-// Three staggered waves of dots with jittered angles, radii and sizes, each
-// arcing outward with a touch of downward drift so it reads as sparks
-// falling rather than a tidy expanding ring.
-static void fireworks_start(void)
+// Square, not round: the pixel look.
+static lv_obj_t *fw_make_pixel(int size, lv_palette_t color)
 {
-    static const lv_palette_t colors[] = {LV_PALETTE_RED, LV_PALETTE_AMBER,
-                                          LV_PALETTE_GREEN, LV_PALETTE_LIGHT_BLUE,
-                                          LV_PALETTE_PURPLE, LV_PALETTE_PINK};
+    lv_obj_t *px = lv_obj_create(s_fw_layer);
+    lv_obj_set_size(px, size, size);
+    lv_obj_set_style_radius(px, 0, 0);
+    lv_obj_set_style_bg_color(px, lv_palette_main(color), 0);
+    lv_obj_set_style_border_width(px, 0, 0);
+    lv_obj_remove_flag(px, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    return px;
+}
 
-    for (int wave = 0; wave < FW_WAVES; wave++) {
-        const uint32_t delay = wave * FW_WAVE_GAP_MS;
-        // Later waves start slightly off-center, like secondary shells.
-        const int cx = LCD_H_RES / 2 + (rand() % 61 - 30) * wave;
-        const int cy = LCD_V_RES / 2 + (rand() % 41 - 20) * wave;
+static void fw_burst_at(int cx, int cy)
+{
+    const lv_palette_t color =
+        s_fw_colors[rand() % (sizeof(s_fw_colors) / sizeof(s_fw_colors[0]))];
 
-        for (int i = 0; i < FW_DOTS_PER_WAVE; i++) {
-            const int size = 5 + rand() % 6;
-            lv_obj_t *dot = lv_obj_create(s_screen);
-            lv_obj_set_size(dot, size, size);
-            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-            lv_obj_set_style_bg_color(
-                dot, lv_palette_main(colors[rand() % (sizeof(colors) / sizeof(colors[0]))]),
-                0);
-            lv_obj_set_style_border_width(dot, 0, 0);
-            lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_set_pos(dot, cx, cy);
-            // Born transparent; the delayed fade-in reveals it at wave start.
-            lv_obj_set_style_opa(dot, LV_OPA_TRANSP, 0);
+    for (int i = 0; i < FW_BURST_SPARKS; i++) {
+        lv_obj_t *spark = fw_make_pixel(5 + rand() % 7, color);
+        lv_obj_set_pos(spark, cx, cy);
 
-            const float jitter = ((float)(rand() % 100) / 100.0f - 0.5f) * 0.4f;
-            const float angle =
-                (float)i * (2.0f * (float)M_PI / FW_DOTS_PER_WAVE) + jitter;
-            const int r = FW_RADIUS_MIN + rand() % (FW_RADIUS_MAX - FW_RADIUS_MIN);
+        const float jitter = ((float)(rand() % 100) / 100.0f - 0.5f) * 0.5f;
+        const float angle = (float)i * (2.0f * (float)M_PI / FW_BURST_SPARKS) + jitter;
+        const int r = FW_BURST_R_MIN + rand() % (FW_BURST_R_MAX - FW_BURST_R_MIN);
 
-            lv_anim_t ax;
-            lv_anim_init(&ax);
-            lv_anim_set_var(&ax, dot);
-            lv_anim_set_exec_cb(&ax, fw_set_x);
-            lv_anim_set_values(&ax, cx, cx + (int32_t)(r * cosf(angle)));
-            lv_anim_set_duration(&ax, FW_MS);
-            lv_anim_set_delay(&ax, delay);
-            lv_anim_set_path_cb(&ax, lv_anim_path_ease_out);
-            lv_anim_start(&ax);
+        lv_anim_t ax;
+        lv_anim_init(&ax);
+        lv_anim_set_var(&ax, spark);
+        lv_anim_set_exec_cb(&ax, fw_set_x);
+        lv_anim_set_values(&ax, cx, cx + (int32_t)(r * cosf(angle)));
+        lv_anim_set_duration(&ax, FW_BURST_MS);
+        lv_anim_set_path_cb(&ax, lv_anim_path_ease_out);
+        lv_anim_start(&ax);
 
-            lv_anim_t ay;
-            lv_anim_init(&ay);
-            lv_anim_set_var(&ay, dot);
-            lv_anim_set_exec_cb(&ay, fw_set_y);
-            // +25 px of sag at the end of the arc: gravity, cheaply.
-            lv_anim_set_values(&ay, cy, cy + (int32_t)(r * sinf(angle)) + 25);
-            lv_anim_set_duration(&ay, FW_MS);
-            lv_anim_set_delay(&ay, delay);
-            lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
-            lv_anim_set_completed_cb(&ay, fw_done);  // fires after delay + duration
-            lv_anim_start(&ay);
+        lv_anim_t ay;
+        lv_anim_init(&ay);
+        lv_anim_set_var(&ay, spark);
+        // +40 px of sag at the arc's end: gravity, cheaply.
+        lv_anim_set_values(&ay, cy, cy + (int32_t)(r * sinf(angle)) + 40);
+        lv_anim_set_duration(&ay, FW_BURST_MS);
+        lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
+        lv_anim_set_exec_cb(&ay, fw_set_y);
+        lv_anim_set_completed_cb(&ay, fw_done);
+        lv_anim_start(&ay);
 
-            // Reveal at wave start, burn bright, fade over the back half.
-            lv_obj_fade_in(dot, 60, delay);
-            lv_obj_fade_out(dot, FW_MS / 2, delay + FW_MS / 2);
-        }
+        lv_obj_fade_out(spark, FW_BURST_MS / 2, FW_BURST_MS / 2);
+    }
+}
+
+static void fw_rocket_done(lv_anim_t *a)
+{
+    lv_obj_t *rocket = (lv_obj_t *)a->var;
+    const int x = lv_obj_get_x(rocket);
+    const int y = lv_obj_get_y(rocket);
+    lv_obj_delete(rocket);
+    if (atomic_load(&s_show_active)) {
+        fw_burst_at(x, y);
+    }
+}
+
+static void fw_launch(lv_timer_t *timer)
+{
+    (void)timer;
+    // The show ends itself if the user wandered off to another page.
+    if (!atomic_load(&s_show_active) || page_manager_current() != PAGE_TIMER) {
+        atomic_store(&s_show_active, false);
+        lv_timer_pause(s_show_timer);
+        return;
+    }
+
+    const int x0 = 50 + rand() % (LCD_H_RES - 100);
+    const int apex = 70 + rand() % 160;
+    lv_obj_t *rocket = fw_make_pixel(6, LV_PALETTE_AMBER);
+    lv_obj_set_pos(rocket, x0, LCD_V_RES + 6);
+
+    lv_anim_t ax;
+    lv_anim_init(&ax);
+    lv_anim_set_var(&ax, rocket);
+    lv_anim_set_exec_cb(&ax, fw_set_x);
+    lv_anim_set_values(&ax, x0, x0 + (rand() % 61 - 30));  // slight drift
+    lv_anim_set_duration(&ax, FW_ROCKET_MS);
+    lv_anim_start(&ax);
+
+    lv_anim_t ay;
+    lv_anim_init(&ay);
+    lv_anim_set_var(&ay, rocket);
+    lv_anim_set_exec_cb(&ay, fw_set_y);
+    lv_anim_set_values(&ay, LCD_V_RES + 6, apex);
+    lv_anim_set_duration(&ay, FW_ROCKET_MS);
+    lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);  // decelerates like a real shell
+    lv_anim_set_completed_cb(&ay, fw_rocket_done);
+    lv_anim_start(&ay);
+}
+
+static void fw_show_start(void)
+{
+    atomic_store(&s_show_active, true);
+    if (s_show_timer == NULL) {
+        s_show_timer = lv_timer_create(fw_launch, FW_LAUNCH_MS, NULL);
+    } else {
+        lv_timer_resume(s_show_timer);
+    }
+    fw_launch(s_show_timer);  // first rocket immediately
+}
+
+static void fw_show_stop(void)
+{
+    atomic_store(&s_show_active, false);
+    if (s_show_timer != NULL) {
+        lv_timer_pause(s_show_timer);
+    }
+    if (s_fw_layer != NULL) {
+        // Deleting the children also kills their animations mid-flight;
+        // the sky goes instantly, satisfyingly clear.
+        lv_obj_clean(s_fw_layer);
     }
 }
 
@@ -360,7 +431,7 @@ static void refresh_ui(lv_timer_t *timer)
     if (atomic_exchange(&s_alert_pending, false)) {
         s_flash_until_us = now + (int64_t)ALERT_FLASH_MS * 1000;
         if (settings_fireworks()) {
-            fireworks_start();
+            fw_show_start();  // rockets until the user taps
         }
     }
     if (now < s_flash_until_us) {
@@ -378,12 +449,14 @@ static void refresh_ui(lv_timer_t *timer)
 
 static void on_short_click(lv_event_t *e)
 {
+    fw_show_stop();  // acknowledging the alert ends the show
     toggle_running();
     lv_timer_ready(lv_event_get_user_data(e));  // repaint now, not in 200 ms
 }
 
 static void on_long_press(lv_event_t *e)
 {
+    fw_show_stop();
     reset_to_idle();
     lv_timer_ready(lv_event_get_user_data(e));
 }
@@ -442,11 +515,32 @@ lv_obj_t *page_pomodoro_create(void)
                      90);
     }
 
+    // The fireworks layer sits above every widget; transparent and inert to
+    // input, it exists so a single clean() can end the show.
+    s_fw_layer = lv_obj_create(s_screen);
+    lv_obj_set_size(s_fw_layer, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(s_fw_layer, 0, 0);
+    lv_obj_set_style_bg_opa(s_fw_layer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_fw_layer, 0, 0);
+    lv_obj_set_style_pad_all(s_fw_layer, 0, 0);
+    lv_obj_remove_flag(s_fw_layer, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
     lv_timer_t *timer = lv_timer_create(refresh_ui, UI_REFRESH_MS, NULL);
     lv_obj_add_event_cb(s_screen, on_short_click, LV_EVENT_SHORT_CLICKED, timer);
     lv_obj_add_event_cb(s_screen, on_long_press, LV_EVENT_LONG_PRESSED, timer);
 
     return s_screen;
+}
+
+bool page_pomodoro_session_running(void)
+{
+    if (s_lock == NULL) {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool running = s_st.running && s_st.phase != POMO_IDLE;
+    xSemaphoreGive(s_lock);
+    return running;
 }
 
 bool page_pomodoro_badge_text(char *buf, size_t len)
