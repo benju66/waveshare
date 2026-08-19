@@ -22,6 +22,7 @@
 #include "net_task.h"
 #include "page_manager.h"
 #include "render.h"
+#include "settings.h"
 #include "sim.h"
 #include "touch_cst820.h"
 #include "ui_lvgl.h"
@@ -171,8 +172,9 @@ void app_main(void)
     ESP_LOGI(TAG, "FluidBox starting");
 
     ESP_ERROR_CHECK(i2c_init());
+    settings_init();  // best effort; defaults cover an unreadable NVS
     ESP_ERROR_CHECK(display_init(s_i2c_bus));
-    ESP_ERROR_CHECK(display_set_brightness(DISPLAY_BRIGHTNESS));
+    ESP_ERROR_CHECK(display_set_brightness(settings_brightness()));
 
     // The fluid still works without the IMU, it just falls straight down, so a
     // sensor failure is logged rather than fatal.

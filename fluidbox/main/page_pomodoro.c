@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "page_manager.h"
+#include "settings.h"
 
 #define UI_REFRESH_MS 200
 
@@ -358,7 +359,9 @@ static void refresh_ui(lv_timer_t *timer)
     const int64_t now = esp_timer_get_time();
     if (atomic_exchange(&s_alert_pending, false)) {
         s_flash_until_us = now + (int64_t)ALERT_FLASH_MS * 1000;
-        fireworks_start();
+        if (settings_fireworks()) {
+            fireworks_start();
+        }
     }
     if (now < s_flash_until_us) {
         s_flash_on = !s_flash_on;

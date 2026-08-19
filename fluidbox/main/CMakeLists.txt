@@ -15,6 +15,8 @@ idf_component_register(
         "net_task.c"
         "battery.c"
         "ota.c"
+        "settings.c"
+        "page_settings.c"
     INCLUDE_DIRS "."
 )
 

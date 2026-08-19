@@ -3,13 +3,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "battery.h"
 #include "button.h"
 #include "config.h"
 #include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "imu.h"
 #include "page_pomodoro.h"
+#include "settings.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -107,7 +110,8 @@ static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
             s_y0 = y;
             s_t0_us = now;
             s_lv_published = false;
-            if (page_manager_screen_is_off() && !s_stationary) {
+            if (page_manager_screen_is_off() && settings_wake_guard() &&
+                !s_stationary) {
                 // Pocket guard: the screen is dark and the device is being
                 // jostled - this "touch" is fabric. Swallow the whole
                 // contact; only the PWR button wakes a moving device.
@@ -291,11 +295,24 @@ static void touch_task(void *arg)
     (void)arg;
 
     for (;;) {
-        // The dark screen needs neither 50 Hz touch tracking nor a hot I2C
-        // bus; the INT line still short-circuits the slow poll on a real tap.
-        const uint32_t poll_ms =
-            page_manager_screen_is_off() ? TOUCH_POLL_OFF_MS : TOUCH_POLL_MS;
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(poll_ms));
+        const bool dark = page_manager_screen_is_off();
+
+        if (dark && !battery_on_usb()) {
+            // Pocket sleep: the whole chip naps between polls, cutting the
+            // dark-screen drain by an order of magnitude. Touch INT (active
+            // low) or the poll timer wakes it. USB power skips this so the
+            // serial console stays alive on the desk.
+            gpio_wakeup_enable(TOUCH_INT_GPIO, GPIO_INTR_LOW_LEVEL);
+            esp_sleep_enable_gpio_wakeup();
+            esp_sleep_enable_timer_wakeup((uint64_t)TOUCH_POLL_OFF_MS * 1000);
+            esp_light_sleep_start();
+            gpio_wakeup_disable(TOUCH_INT_GPIO);
+        } else {
+            // The dark screen needs neither 50 Hz touch tracking nor a hot
+            // I2C bus; INT still short-circuits the slow poll on a real tap.
+            ulTaskNotifyTake(pdTRUE,
+                             pdMS_TO_TICKS(dark ? TOUCH_POLL_OFF_MS : TOUCH_POLL_MS));
+        }
 
         poll_power_button();
         poll_imu();

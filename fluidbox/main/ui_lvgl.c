@@ -9,6 +9,7 @@
 #include "lvgl.h"
 #include "page_now.h"
 #include "page_pomodoro.h"
+#include "page_settings.h"
 
 // LVGL renders in partial mode into the same two DMA band buffers the fluid
 // renderer uses; the page manager guarantees only one of them is ever active.
@@ -187,6 +188,7 @@ esp_err_t ui_lvgl_init(void)
 
     s_screens[PAGE_TIMER] = page_pomodoro_create();
     s_screens[PAGE_NOW] = page_now_create();
+    s_screens[PAGE_SETTINGS] = page_settings_create();
 
     if (xTaskCreatePinnedToCore(lvgl_task, "lvgl", 8192, NULL, 4, &s_task, 0) !=
         pdPASS) {

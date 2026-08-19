@@ -17,6 +17,7 @@ typedef enum {
     PAGE_FLUID = 0,
     PAGE_TIMER,
     PAGE_NOW,
+    PAGE_SETTINGS,
     PAGE_COUNT,
 } page_id_t;
 

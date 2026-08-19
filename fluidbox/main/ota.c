@@ -24,6 +24,15 @@ esp_err_t ota_check_and_apply(void)
 {
     const esp_app_desc_t *running = esp_app_get_description();
 
+    // A "-dirty" version is a development build flashed over USB; letting
+    // the release feed replace it means the updater "downgrades" work in
+    // progress minutes after it was flashed (this happened). Releases only
+    // ever move between clean tagged versions.
+    if (strstr(running->version, "dirty") != NULL) {
+        ESP_LOGI(TAG, "dev build (%s), leaving it alone", running->version);
+        return ESP_OK;
+    }
+
     esp_http_client_config_t http = {
         .url = OTA_RELEASE_URL,
         .crt_bundle_attach = esp_crt_bundle_attach,

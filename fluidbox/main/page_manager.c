@@ -11,6 +11,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "net_task.h"
+#include "settings.h"
 #include "ui_lvgl.h"
 
 #define PAGE_EVT_QUEUE_LEN 4
@@ -175,7 +176,7 @@ static void goto_page(page_id_t target)
         // Any route back to an LVGL page ends the screensaver state, whether
         // it was a wake touch or a plain swipe.
         if (atomic_exchange(&s_idle_dimmed, false)) {
-            display_set_brightness(DISPLAY_BRIGHTNESS);
+            display_set_brightness(settings_brightness());
         }
     }
     atomic_store(&s_last_touch_us, esp_timer_get_time());
@@ -206,7 +207,7 @@ static void screen_wake(page_id_t target)
         return;
     }
     display_power(true);
-    display_set_brightness(DISPLAY_BRIGHTNESS);
+    display_set_brightness(settings_brightness());
     net_set_enabled(true);
     atomic_store(&s_idle_dimmed, false);
     start_page(target);
@@ -224,17 +225,18 @@ static void idle_check(void)
     if (atomic_load(&s_screen_off) || page_manager_current() == PAGE_FLUID) {
         return;
     }
+    const int idle_min = settings_idle_min();
     const int64_t idle_us = esp_timer_get_time() - atomic_load(&s_last_touch_us);
-    if (idle_us > (int64_t)IDLE_TO_FLUID_MIN * 60 * 1000000) {
+    if (idle_us > (int64_t)idle_min * 60 * 1000000) {
         if (battery_on_usb()) {
             // Desk: the dimmed fluid is the screensaver.
-            ESP_LOGI(TAG, "idle %d min, dimming to the fluid", IDLE_TO_FLUID_MIN);
+            ESP_LOGI(TAG, "idle %d min, dimming to the fluid", idle_min);
             goto_page(PAGE_FLUID);
             display_set_brightness(IDLE_FLUID_BRIGHTNESS);
             atomic_store(&s_idle_dimmed, true);
         } else {
             // Battery: every idle minute of screensaver is carry time lost.
-            ESP_LOGI(TAG, "idle %d min on battery, screen off", IDLE_TO_FLUID_MIN);
+            ESP_LOGI(TAG, "idle %d min on battery, screen off", idle_min);
             screen_off();
         }
     }
