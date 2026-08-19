@@ -8,3 +8,7 @@
 // Builds and returns the page's screen. Call once, from the LVGL task's
 // context (during ui_lvgl_init, before the task loop starts).
 lv_obj_t *page_now_create(void);
+
+// Vertical-swipe views: weather -> solar arc -> moon phase. Safe from the
+// touch task; the LVGL-side refresh timer applies it.
+void page_now_cycle(int dir);

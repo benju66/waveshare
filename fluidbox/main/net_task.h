@@ -17,6 +17,11 @@ typedef struct {
     float today_hi;
     float today_lo;
     int precip_prob_pct;   // probability next hour, 0..100
+    float feels_like;      // apparent temperature, F
+    int humidity_pct;      // relative humidity, 0..100
+    float wind_mph;
+    int sunrise_min;       // local minutes since midnight, -1 unknown
+    int sunset_min;
     int64_t fetched_us;    // esp_timer_get_time() at last success, for staleness
 } weather_model_t;
 

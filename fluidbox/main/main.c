@@ -6,7 +6,9 @@
 // around the published particle snapshot, so neither waits on the other.
 
 #include <stdio.h>
+#include <string.h>
 
+#include "balls.h"
 #include "battery.h"
 #include "button.h"
 #include "config.h"
@@ -20,8 +22,11 @@
 #include "freertos/task.h"
 #include "imu.h"
 #include "net_task.h"
+#include "orbits.h"
 #include "page_manager.h"
+#include "pongwars.h"
 #include "render.h"
+#include "threads.h"
 #include "settings.h"
 #include "sim.h"
 #include "touch_cst820.h"
@@ -62,11 +67,31 @@ static void render_task(void *arg)
 {
     (void)arg;
 
+    static int last_mode = -1;
+
     for (;;) {
         // Sleeps here while an LVGL page owns the panel.
         page_manager_render_gate();
 
-        render_frame();
+        const int mode = settings_sim_mode();
+        if (mode != last_mode) {
+            last_mode = mode;
+            // The fluid's dirty-band tracking assumes untouched bands are
+            // black, and the other toys paint everywhere: wipe per switch.
+            for (int band = 0; band < BAND_COUNT; band++) {
+                uint16_t *buf = display_acquire_band();
+                memset(buf, 0, (size_t)LCD_H_RES * BAND_ROWS * sizeof(uint16_t));
+                display_flush_band(band, buf);
+            }
+        }
+
+        switch (mode) {
+        case SIM_MODE_BALLS: balls_render_frame(); break;
+        case SIM_MODE_PONGWARS: pongwars_render_frame(); break;
+        case SIM_MODE_THREADS: threads_render_frame(); break;
+        case SIM_MODE_ORBITS: orbits_render_frame(); break;
+        default: render_frame(); break;
+        }
         s_frames++;
 
         // The panel transfer paces this loop; yielding one tick keeps the idle
@@ -106,7 +131,13 @@ static void sim_task(void *arg)
         }
 
         imu_read(dt, &forces);
-        sim_step(dt, &forces);
+        switch (settings_sim_mode()) {
+        case SIM_MODE_BALLS: balls_step(dt, &forces); break;
+        case SIM_MODE_PONGWARS: pongwars_step(dt, &forces); break;
+        case SIM_MODE_THREADS: threads_step(dt, &forces); break;
+        case SIM_MODE_ORBITS: orbits_step(dt, &forces); break;
+        default: sim_step(dt, &forces); break;
+        }
         s_steps++;
 
         // The PWR button moved to the touch task (it now sleeps the screen
@@ -190,6 +221,10 @@ void app_main(void)
 
     sim_init();
     render_init();
+    ESP_ERROR_CHECK(balls_init());
+    ESP_ERROR_CHECK(pongwars_init());
+    ESP_ERROR_CHECK(threads_init());
+    ESP_ERROR_CHECK(orbits_init());
 
     // Page machinery before the renderer tasks exist: their loop gates read
     // page manager state from the first iteration.

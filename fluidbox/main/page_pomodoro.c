@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "page_manager.h"
 #include "settings.h"
+#include "ui_theme.h"
 
 #define UI_REFRESH_MS 200
 
@@ -488,12 +489,13 @@ lv_obj_t *page_pomodoro_create(void)
     lv_obj_set_style_arc_color(s_arc, lv_color_hex(0x202020), LV_PART_MAIN);
 
     s_time_label = lv_label_create(s_screen);
-    lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_48, 0);
+    theme_apply_big(s_time_label);
     lv_obj_set_style_text_color(s_time_label, lv_color_white(), 0);
     lv_label_set_text(s_time_label, "25:00");
     lv_obj_center(s_time_label);
 
     s_phase_label = lv_label_create(s_screen);
+    lv_obj_set_style_text_font(s_phase_label, theme_font_small(), 0);
     lv_obj_set_style_text_color(s_phase_label, lv_palette_main(LV_PALETTE_GREY), 0);
     lv_label_set_text(s_phase_label, "tap to start");
     lv_obj_align(s_phase_label, LV_ALIGN_CENTER, 0, 44);
@@ -501,7 +503,7 @@ lv_obj_t *page_pomodoro_create(void)
     for (int i = 0; i < POMO_SESSIONS_PER_CYCLE; i++) {
         s_dots[i] = lv_obj_create(s_screen);
         lv_obj_set_size(s_dots[i], 12, 12);
-        lv_obj_set_style_radius(s_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_radius(s_dots[i], theme_radius(LV_RADIUS_CIRCLE), 0);
         lv_obj_set_style_bg_color(s_dots[i], lv_palette_main(LV_PALETTE_RED), 0);
         lv_obj_set_style_bg_opa(s_dots[i], LV_OPA_20, 0);
         lv_obj_set_style_border_width(s_dots[i], 0, 0);

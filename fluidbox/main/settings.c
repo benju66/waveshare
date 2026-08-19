@@ -20,6 +20,8 @@ static atomic_int s_brightness = DISPLAY_BRIGHTNESS;
 static atomic_int s_idle_min = IDLE_TO_FLUID_MIN;
 static atomic_bool s_fireworks = true;
 static atomic_bool s_wake_guard = true;
+static atomic_int s_sim_mode = SIM_MODE_FLUID;
+static atomic_bool s_retro = false;
 
 static nvs_handle_t s_nvs;
 
@@ -58,9 +60,17 @@ esp_err_t settings_init(void)
     if (nvs_get_i32(s_nvs, "guard", &v) == ESP_OK) {
         atomic_store(&s_wake_guard, v != 0);
     }
-    ESP_LOGI(TAG, "bright %d, idle %d min, fireworks %d, guard %d",
+    if (nvs_get_i32(s_nvs, "sim_mode", &v) == ESP_OK && v >= 0 &&
+        v < SIM_MODE_COUNT) {
+        atomic_store(&s_sim_mode, v);
+    }
+    if (nvs_get_i32(s_nvs, "retro", &v) == ESP_OK) {
+        atomic_store(&s_retro, v != 0);
+    }
+    ESP_LOGI(TAG, "bright %d, idle %d min, fireworks %d, guard %d, sim mode %d",
              atomic_load(&s_brightness), atomic_load(&s_idle_min),
-             atomic_load(&s_fireworks), atomic_load(&s_wake_guard));
+             atomic_load(&s_fireworks), atomic_load(&s_wake_guard),
+             atomic_load(&s_sim_mode));
     return ESP_OK;
 }
 
@@ -102,4 +112,22 @@ void settings_set_wake_guard(bool on)
 {
     atomic_store(&s_wake_guard, on);
     persist("guard", on);
+}
+
+bool settings_retro(void) { return atomic_load(&s_retro); }
+
+void settings_set_retro(bool on)
+{
+    atomic_store(&s_retro, on);
+    persist("retro", on);
+}
+
+int settings_sim_mode(void) { return atomic_load(&s_sim_mode); }
+
+void settings_set_sim_mode(int mode)
+{
+    mode = ((mode % SIM_MODE_COUNT) + SIM_MODE_COUNT) % SIM_MODE_COUNT;
+    atomic_store(&s_sim_mode, mode);
+    persist("sim_mode", mode);
+    ESP_LOGI(TAG, "sim mode -> %d", mode);
 }

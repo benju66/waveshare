@@ -74,9 +74,10 @@
 // particles, 0.085 settled to 65 px/s and 0.115 only reached 140. This is the
 // compromise, and it is the first thing to lower if the surface looks noisy.
 // Fork note: upstream shipped 0.100 and measured 0.085 settling to 65 px/s
-// where 0.115 only reached 140 (see below). At 0.100 the pool never quite
-// went still when held upright, so this fork takes the measured-calm value.
-#define TIME_SCALE 0.085f
+// where 0.115 only reached 140 (see below). Ben wants a genuinely still
+// pool at rest, so this fork keeps stepping it down; below ~0.07 the tilt
+// response starts reading as syrup, which is the floor of this knob.
+#define TIME_SCALE 0.078f
 
 // Ceiling on the physics timestep, in scaled seconds per substep.
 //
@@ -95,7 +96,11 @@
 // the board was held. 2.7 ms corresponds to about 37 steps/s, so above that
 // rate the fluid still runs in real time; below it the fluid runs slow instead
 // of running unstable, which is invisible next to a solver that never settles.
-#define SIM_DT_MAX 0.0022f
+// Fork note: lowered from upstream's 0.0022 after measuring the upright
+// device at 28 steps/s with clamp bursts of 70-340 pairs and 12,000 px/s
+// ejecta - the exact simmer loop described above. The lower ceiling makes
+// the deep upright pool run slightly slow instead of unstable.
+#define SIM_DT_MAX 0.0016f
 
 #define GRAVITY_MPS2 9.81f
 
@@ -131,8 +136,12 @@
 // of internal-RAM globals alongside the fluid. Density reads nearly the same
 // at 800 and the step rate rises a little; the README's own guidance is that
 // COUNT is the first knob to turn.
-#define PARTICLE_MAX 800
-#define PARTICLE_COUNT 800
+// Second trim (800 -> 700): upright, every particle pools into one deep
+// column and the neighbour load dragged the solver to 28 steps/s - below
+// the ~39 the README measured as the settling threshold. Fewer particles
+// is the honest fix, and it frees another ~15 KB of internal RAM.
+#define PARTICLE_MAX 700
+#define PARTICLE_COUNT 700
 
 // Distance between neighbouring particles when the fluid is at rest.
 #define REST_SPACING 17.0f
@@ -200,7 +209,11 @@
 // are in pixels per second and run into the hundreds, which is why SIGMA is
 // large: a pair sheds roughly 0.5 * dt * q * SIGMA of its closing speed per
 // step, so SIGMA around 30 damps a few percent per neighbour.
-#define VISC_SIGMA 45.0f
+// Fork note: raised from upstream's 45 to bleed off the residual simmer at
+// rest faster. Higher reads slightly thicker in motion; the trade is
+// deliberate - stillness at rest matters more to the owner than maximum
+// wateriness mid-slosh.
+#define VISC_SIGMA 58.0f
 #define VISC_BETA 0.03f
 
 #define WALL_RESTITUTION 0.25f
@@ -307,6 +320,12 @@
 // never doubles as a press on whatever widget it started on.
 #define SWIPE_LV_CANCEL_DX 30
 
+// On the physics page the finger plays with the toy, so navigation swipes
+// only count when the contact STARTED this close to a screen edge:
+// left/right edges for page changes, top/bottom for cycling toys. Other
+// pages keep swipe-from-anywhere.
+#define SWIPE_EDGE_PX 44
+
 // Pomodoro. Standard cycle; every POMO_SESSIONS_PER_CYCLE-th work session
 // ends in the long break. POMO_WORK_MIN is only the boot default: a vertical
 // swipe on the idle timer page adjusts the work duration at runtime.
@@ -353,6 +372,31 @@
 // touch returns to the page that was left, at full brightness.
 #define IDLE_TO_FLUID_MIN 5
 #define IDLE_FLUID_BRIGHTNESS 90
+
+// Balls mode: the settings-page alternative to the fluid on the physics
+// page. Rigid 2D marbles, real-time (no slow motion), same IMU input and
+// rounded box. Unlike the fluid they genuinely rest when the device does.
+#define BALLS_COUNT 90
+#define BALLS_R_MIN 10
+#define BALLS_R_MAX 16
+// px/s^2 at 1 g. The fluid's scaled gravity is ~273k px/s^2 in slow motion;
+// marbles run real time, so this is tuned for feel: heavy but followable.
+#define BALLS_GRAVITY 3400.0f
+#define BALLS_WALL_RESTITUTION 0.72f
+#define BALLS_BALL_RESTITUTION 0.85f
+#define BALLS_MAX_SPEED 2600.0f
+#define BALLS_DRAG 0.9990f  // per substep; keeps corner jitter from ringing
+// Extra gain on the fast-changing part of the force vector (the shake);
+// steady tilt passes through untouched. Marbles should clatter when shaken.
+#define BALLS_SHAKE_BOOST 4.0f
+
+// Pong Wars territory toy: pure black vs a neon, two balls eating into each
+// other's ground. Mostly-off pixels keep AMOLED power low; tilt bends the
+// ball paths so the war can be influenced.
+#define PW_CELL 16
+#define PW_SPEED 300.0f
+#define PW_BALL_R 7
+#define PW_TILT_BEND 0.55f  // fraction of ball gravity applied as steering
 
 // OTA: pulled from the newest GitHub release when its embedded version
 // differs from the running image. Checked shortly after boot, then daily.

@@ -32,9 +32,12 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 # brim (the link overflows without this).
 CONFIG_LV_USE_CUSTOM_MALLOC=y
 
-# LVGL fonts beyond the default 14pt: the pomodoro's big countdown digits.
+# LVGL fonts beyond the default 14pt: the pomodoro's big countdown digits,
+# plus the UNSCII bitmap fonts that power the retro pixel theme.
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+CONFIG_LV_FONT_UNSCII_8=y
+CONFIG_LV_FONT_UNSCII_16=y
 
 # Keep Wi-Fi and lwIP work off core 0, where the render and LVGL tasks live,
 # so a weather fetch cannot dent the fluid frame rate.

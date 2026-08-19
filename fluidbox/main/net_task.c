@@ -118,10 +118,11 @@ static esp_err_t wifi_start(void)
 // forecast_hours=2 so index 1 of the hourly array is the hour after this one.
 #define WEATHER_URL_FMT                                                        \
     "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"     \
-    "&current=temperature_2m,weather_code"                                     \
-    "&daily=temperature_2m_max,temperature_2m_min"                             \
+    "&current=temperature_2m,weather_code,apparent_temperature,"               \
+    "relative_humidity_2m,wind_speed_10m"                                      \
+    "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"              \
     "&hourly=precipitation_probability&forecast_hours=2&forecast_days=1"       \
-    "&temperature_unit=fahrenheit&timezone=auto"
+    "&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
 
 static esp_err_t parse_weather(const char *json, weather_model_t *out)
 {
@@ -152,6 +153,32 @@ static esp_err_t parse_weather(const char *json, weather_model_t *out)
         out->today_hi = (float)hi->valuedouble;
         out->today_lo = (float)lo->valuedouble;
         out->precip_prob_pct = cJSON_IsNumber(prob) ? prob->valueint : 0;
+
+        const cJSON *feels = cJSON_GetObjectItem(current, "apparent_temperature");
+        const cJSON *hum = cJSON_GetObjectItem(current, "relative_humidity_2m");
+        const cJSON *wind = cJSON_GetObjectItem(current, "wind_speed_10m");
+        out->feels_like = cJSON_IsNumber(feels) ? (float)feels->valuedouble : out->temp;
+        out->humidity_pct = cJSON_IsNumber(hum) ? hum->valueint : 0;
+        out->wind_mph = cJSON_IsNumber(wind) ? (float)wind->valuedouble : 0;
+
+        // Sunrise/sunset arrive as local ISO strings ("...T06:24"); minutes
+        // since midnight is all the solar arc needs.
+        out->sunrise_min = -1;
+        out->sunset_min = -1;
+        const cJSON *rise =
+            cJSON_GetArrayItem(cJSON_GetObjectItem(daily, "sunrise"), 0);
+        const cJSON *set =
+            cJSON_GetArrayItem(cJSON_GetObjectItem(daily, "sunset"), 0);
+        int h, m;
+        const char *t;
+        if (cJSON_IsString(rise) && (t = strchr(rise->valuestring, 'T')) != NULL &&
+            sscanf(t + 1, "%d:%d", &h, &m) == 2) {
+            out->sunrise_min = h * 60 + m;
+        }
+        if (cJSON_IsString(set) && (t = strchr(set->valuestring, 'T')) != NULL &&
+            sscanf(t + 1, "%d:%d", &h, &m) == 2) {
+            out->sunset_min = h * 60 + m;
+        }
         out->fetched_us = esp_timer_get_time();
         out->valid = true;
         err = ESP_OK;

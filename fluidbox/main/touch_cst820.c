@@ -3,7 +3,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "balls.h"
 #include "battery.h"
+#include "orbits.h"
+#include "page_now.h"
+#include "page_settings.h"
 #include "button.h"
 #include "config.h"
 #include "driver/gpio.h"
@@ -63,6 +67,8 @@ static int64_t s_t0_us;
 static bool s_swipe_fired;
 static bool s_lv_suppressed;
 static bool s_lv_published;  // LVGL has seen this contact as a live press
+static bool s_edge_h;        // contact started near the left/right edge
+static bool s_edge_v;        // contact started near the top/bottom edge
 
 // True while the device has been motionless for STATIONARY_HOLD_MS: the
 // desk-vs-pocket discriminator for touch wake. Updated by poll_imu.
@@ -97,6 +103,13 @@ static void fire_swipe(int dx)
     page_manager_post_event(dx < 0 ? PAGE_EVT_SWIPE_LEFT : PAGE_EVT_SWIPE_RIGHT);
 }
 
+// On the physics page the center of the screen belongs to the toy; only
+// edge-started contacts may navigate.
+static bool page_swipe_allowed(void)
+{
+    return page_manager_current() != PAGE_FLUID || s_edge_h;
+}
+
 static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
 {
     const int64_t now = esp_timer_get_time();
@@ -110,6 +123,8 @@ static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
             s_y0 = y;
             s_t0_us = now;
             s_lv_published = false;
+            s_edge_h = x < SWIPE_EDGE_PX || x > LCD_H_RES - SWIPE_EDGE_PX;
+            s_edge_v = y < SWIPE_EDGE_PX || y > LCD_V_RES - SWIPE_EDGE_PX;
             if (page_manager_screen_is_off() && settings_wake_guard() &&
                 !s_stationary) {
                 // Pocket guard: the screen is dark and the device is being
@@ -135,7 +150,8 @@ static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
             s_lv_suppressed = true;
         }
 
-        if (!s_swipe_fired && abs(dx) >= SWIPE_MIN_DX && abs(dy) <= SWIPE_MAX_DY &&
+        if (!s_swipe_fired && page_swipe_allowed() && abs(dx) >= SWIPE_MIN_DX &&
+            abs(dy) <= SWIPE_MAX_DY &&
             now - s_t0_us <= (int64_t)SWIPE_MAX_MS * 1000) {
             fire_swipe(dx);
         }
@@ -162,7 +178,8 @@ static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
         // few samples for the tracker above. Two fallbacks, in order of
         // trust: total travel between first and last report, then the chip's
         // own gesture engine, which watched the whole thing at full rate.
-        if (!s_swipe_fired && now - s_t0_us <= (int64_t)SWIPE_MAX_MS * 1000) {
+        if (!s_swipe_fired && page_swipe_allowed() &&
+            now - s_t0_us <= (int64_t)SWIPE_MAX_MS * 1000) {
             if (abs(dx) >= SWIPE_MIN_DX && abs(dy) <= SWIPE_MAX_DY) {
                 fire_swipe(dx);
             } else if (gesture == GESTURE_SLIDE_LEFT) {
@@ -182,12 +199,33 @@ static void process_sample(int fingers, int16_t x, int16_t y, uint8_t gesture)
             ui_lvgl_input_click(s_x0, s_y0);
         } else if (!s_swipe_fired && abs(dy) >= SWIPE_MIN_DY &&
                    abs(dx) <= SWIPE_MAX_DY &&
-                   now - s_t0_us <= (int64_t)SWIPE_MAX_MS * 1000 &&
-                   page_manager_current() == PAGE_TIMER) {
-            // Vertical swipe on the timer page: up lengthens the work
-            // session, down shortens it. Only the idle timer listens.
-            page_pomodoro_adjust(dy < 0 ? POMO_ADJUST_STEP_MIN
-                                        : -POMO_ADJUST_STEP_MIN);
+                   now - s_t0_us <= (int64_t)SWIPE_MAX_MS * 1000) {
+            if (page_manager_current() == PAGE_TIMER) {
+                // Vertical swipe on the timer page: up lengthens the work
+                // session, down shortens it. Only the idle timer listens.
+                page_pomodoro_adjust(dy < 0 ? POMO_ADJUST_STEP_MIN
+                                            : -POMO_ADJUST_STEP_MIN);
+            } else if (page_manager_current() == PAGE_FLUID && s_edge_v) {
+                // Vertical swipe from the top/bottom edge: cycle the toy.
+                // Center-started drags are play, not navigation.
+                settings_set_sim_mode(settings_sim_mode() + (dy < 0 ? 1 : -1));
+            } else if (page_manager_current() == PAGE_NOW) {
+                // Weather -> solar arc -> moon phase.
+                page_now_cycle(dy < 0 ? 1 : -1);
+            } else if (page_manager_current() == PAGE_SETTINGS) {
+                page_settings_cycle(dy < 0 ? 1 : -1);
+            }
+        }
+    }
+
+    // Live finger feed: on the physics page the finger is a physical object,
+    // always, so playing works even mid-gesture.
+    if (page_manager_current() == PAGE_FLUID) {
+        const int mode = settings_sim_mode();
+        if (mode == SIM_MODE_BALLS) {
+            balls_touch(x, y, fingers > 0);
+        } else if (mode == SIM_MODE_ORBITS) {
+            orbits_touch(x, y, fingers > 0);
         }
     }
 }

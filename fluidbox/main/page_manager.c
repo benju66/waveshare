@@ -127,6 +127,71 @@ static void clear_panel_black(void)
     display_wait_idle();
 }
 
+// ---------------------------------------------------------------------------
+// CRT sleep/wake: the picture collapses to a bright line, then a dot, like a
+// tube television losing power; waking plays it back the other way. Runs on
+// this task while every renderer is parked, drawing straight through the
+// band machinery. White is 0xFFFF in either byte order.
+// ---------------------------------------------------------------------------
+
+static void crt_frame(int line_w, int line_h)
+{
+    const int cx = LCD_H_RES / 2;
+    const int cy = LCD_V_RES / 2;
+    const int y_top = cy - line_h / 2;
+    const int y_bot = cy + line_h / 2;
+    const int x0 = cx - line_w / 2 < 0 ? 0 : cx - line_w / 2;
+    const int x1 = cx + line_w / 2 >= LCD_H_RES ? LCD_H_RES - 1 : cx + line_w / 2;
+
+    for (int band = 0; band < BAND_COUNT; band++) {
+        const int by = band * BAND_ROWS;
+        uint16_t *buf = display_acquire_band();
+        memset(buf, 0, (size_t)LCD_H_RES * BAND_ROWS * sizeof(uint16_t));
+        for (int y = by; y < by + BAND_ROWS; y++) {
+            if (y < y_top || y > y_bot) {
+                continue;
+            }
+            uint16_t *row = buf + (y - by) * LCD_H_RES;
+            for (int x = x0; x <= x1; x++) {
+                row[x] = 0xFFFF;
+            }
+        }
+        display_flush_band(band, buf);
+    }
+    display_wait_idle();
+}
+
+static void crt_off_animation(void)
+{
+    // Collapse the picture into the line...
+    for (int h = 40; h >= 2; h -= 8) {
+        crt_frame(LCD_H_RES, h);
+        vTaskDelay(pdMS_TO_TICKS(24));
+    }
+    // ...then the line into a dot...
+    for (int w = LCD_H_RES; w >= 10; w = w * 8 / 17) {
+        crt_frame(w, 3);
+        vTaskDelay(pdMS_TO_TICKS(26));
+    }
+    // ...and gone.
+    clear_panel_black();
+    vTaskDelay(pdMS_TO_TICKS(40));
+}
+
+static void crt_on_animation(void)
+{
+    // The dot warms up into a line, the line opens into the picture.
+    for (int w = 10; w < LCD_H_RES; w = w * 17 / 8) {
+        crt_frame(w, 3);
+        vTaskDelay(pdMS_TO_TICKS(24));
+    }
+    for (int h = 2; h <= 40; h += 10) {
+        crt_frame(LCD_H_RES, h);
+        vTaskDelay(pdMS_TO_TICKS(22));
+    }
+    // start_page() wipes to black and the page paints over.
+}
+
 // Parks whichever renderer holds the panel and drains its last transfer.
 // Afterwards nobody owns the panel and the DMA is idle.
 static void park_current(page_id_t current)
@@ -193,7 +258,7 @@ static void screen_off(void)
     const page_id_t current = (page_id_t)atomic_load(&s_current);
     s_page_before_off = current;
     park_current(current);
-    clear_panel_black();
+    crt_off_animation();
     display_power(false);
     // Screen off means pocket or night: the radio is the biggest remaining
     // drain, and weather can be half an hour stale without anyone noticing.
@@ -211,6 +276,7 @@ static void screen_wake(page_id_t target)
     display_set_brightness(settings_brightness());
     net_set_enabled(true);
     atomic_store(&s_idle_dimmed, false);
+    crt_on_animation();
     start_page(target);
     atomic_store(&s_current, target);
     if (target != PAGE_FLUID) {

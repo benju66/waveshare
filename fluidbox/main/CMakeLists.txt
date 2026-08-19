@@ -17,6 +17,14 @@ idf_component_register(
         "ota.c"
         "settings.c"
         "page_settings.c"
+        "balls.c"
+        "pongwars.c"
+        "threads.c"
+        "orbits.c"
+        "ui_theme.c"
+        "fonts/lv_font_ps2p_32.c"
+        "fonts/lv_font_ps2p_16.c"
+        "fonts/lv_font_ps2p_8.c"
     INCLUDE_DIRS "."
 )
 
